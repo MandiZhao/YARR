@@ -3,7 +3,7 @@ import logging
 import os
 import time
 from multiprocessing import Process, Manager
-from typing import Any
+from typing import Any, List, Union 
 
 import numpy as np
 from yarr.agents.agent import Agent
@@ -18,6 +18,7 @@ try:
 except RuntimeError:
     pass
 
+import torch 
 
 class _EnvRunner(object):
 
@@ -37,6 +38,7 @@ class _EnvRunner(object):
                  current_replay_ratio,
                  target_replay_ratio,
                  weightsdir: str = None,
+                 device_list: List[int] = None,
                  ):
         self._train_env = train_env
         self._eval_env = eval_env
@@ -63,6 +65,11 @@ class _EnvRunner(object):
         self._current_replay_ratio = current_replay_ratio
         self._target_replay_ratio = target_replay_ratio
 
+        self._device_list, self._num_device = (None, 1) if device_list is None else (
+            [torch.device("cuda:%d" % int(idx)) for idx in device_list], len(device_list))
+        print('Internal EnvRunner is using GPUs:', self._device_list)
+         
+
     def restart_process(self, name: str):
         p = Process(target=self._run_env, args=self._p_args[name], name=name)
         p.start()
@@ -74,6 +81,24 @@ class _EnvRunner(object):
         for i in range(num_envs):
             n = name + str(i)
             self._p_args[n] = (n, eval)
+            self.p_failures[n] = 0
+            p = Process(target=self._run_env, args=self._p_args[n], name=n)
+            p.start()
+            ps.append(p)
+        return ps
+    
+    def spinup_train_and_eval(self, n_train, n_eval, name='env'):
+        ps = []
+        for i in range(n_train):
+            n = 'train_' + name + str(i)
+            self._p_args[n] = (n, False, i)
+            self.p_failures[n] = 0
+            p = Process(target=self._run_env, args=self._p_args[n], name=n)
+            p.start()
+            ps.append(p)
+        for j in range(i, i + n_eval):
+            n = 'eval_' + name + str(j)
+            self._p_args[n] = (n, True, j)
             self.p_failures[n] = 0
             p = Process(target=self._run_env, args=self._p_args[n], name=n)
             p.start()
@@ -111,13 +136,14 @@ class _EnvRunner(object):
             return np.float32
         return x.dtype
 
-    def _run_env(self, name: str, eval: bool):
+    def _run_env(self, name: str, eval: bool, proc_idx: int):
 
         self._name = name
 
         self._agent = copy.deepcopy(self._agent)
-
-        self._agent.build(training=False)
+        
+        proc_device = self._device_list[int(proc_idx % self._num_device)] if self._device_list is not None else None
+        self._agent.build(training=False, device=proc_device)
 
         logging.info('%s: Launching env.' % name)
         np.random.seed()

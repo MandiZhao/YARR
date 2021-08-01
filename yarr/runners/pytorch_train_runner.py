@@ -62,8 +62,8 @@ class PyTorchTrainRunner(TrainRunner):
             logging.warning(
                 'Numbers of replay buffers differs from sampling rates. Setting as uniform sampling.')
             self._replay_buffer_sample_rates = [1.0 / len(self._wrapped_buffer)] * len(self._wrapped_buffer)
-        if sum(self._replay_buffer_sample_rates) != 1:
-            raise ValueError('Sum of sampling rates should be 1.')
+        # if sum(self._replay_buffer_sample_rates) != 1:
+        #     raise ValueError('Sum of sampling rates should be 1.')
 
         self._train_device = train_device
         self._tensorboard_logging = tensorboard_logging

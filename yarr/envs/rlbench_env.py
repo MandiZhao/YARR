@@ -165,6 +165,7 @@ class MultiTaskRLBenchEnv(MultiTaskEnv):
 
     def __init__(self,
                  task_classes: List[Type[Task]],
+                 task_names: List[str],
                  observation_config: ObservationConfig,
                  action_mode: ActionMode,
                  dataset_root: str = '',
@@ -173,6 +174,7 @@ class MultiTaskRLBenchEnv(MultiTaskEnv):
                  swap_task_every: int = 1):
         super(MultiTaskRLBenchEnv, self).__init__()
         self._task_classes = task_classes
+        self._task_names = task_names 
         self._observation_config = observation_config
         self._channels_last = channels_last
         self._rlbench_env = Environment(
@@ -186,6 +188,7 @@ class MultiTaskRLBenchEnv(MultiTaskEnv):
     def _set_new_task(self):
         self._active_task_id = np.random.randint(0, len(self._task_classes))
         task = self._task_classes[self._active_task_id]
+        self._active_task_name = self._task_names[self._active_task_id]
         self._task = self._rlbench_env.get_task(task)
 
     def extract_obs(self, obs: Observation):

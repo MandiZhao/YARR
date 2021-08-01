@@ -41,10 +41,10 @@ class LogWriter(object):
                 if isinstance(summary, ScalarSummary):
                     self.add_scalar(i, summary.name, summary.value)
                 elif self._tensorboard_logging:
-                    if isinstance(summary, HistogramSummary):
-                        self._tf_writer.add_histogram(
-                            summary.name, summary.value, i)
-                    elif isinstance(summary, ImageSummary):
+                    # if isinstance(summary, HistogramSummary):
+                    #     self._tf_writer.add_histogram(
+                    #         summary.name, summary.value, i)
+                    if isinstance(summary, ImageSummary):
                         # Only grab first item in batch
                         v = (summary.value if summary.value.ndim == 3 else
                              summary.value[0])

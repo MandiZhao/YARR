@@ -19,7 +19,8 @@ from yarr.runners._env_runner import _EnvRunner
 from yarr.utils.rollout_generator import RolloutGenerator
 from yarr.utils.stat_accumulator import StatAccumulator
 
-
+import torch 
+from copy import deepcopy 
 class EnvRunner(object):
 
     def __init__(self,
@@ -35,7 +36,9 @@ class EnvRunner(object):
                  stat_accumulator: Union[StatAccumulator, None] = None,
                  rollout_generator: RolloutGenerator = None,
                  weightsdir: str = None,
-                 max_fails: int = 10):
+                 max_fails: int = 5,
+                 device_list: Union[List[int], None] = None
+                 ):
         self._train_env = train_env
         self._eval_env = eval_env if eval_env else train_env
         self._agent = agent
@@ -64,6 +67,15 @@ class EnvRunner(object):
         self.target_replay_ratio = None  # Will get overridden later
         self.current_replay_ratio = Value('f', -1)
 
+        self._train_device = torch.device("cuda:%d" % int(device_list[0])) if len(device_list) >=1 else None 
+        self._device_list = device_list 
+
+    @property   
+    def device_list(self):
+        if self._device_list is None:
+            return [i for i in range(torch.cuda.device_count())]
+        return deepcopy(self._device_list)
+    
     def summaries(self) -> List[Summary]:
         summaries = []
         if self._stat_accumulator is not None:
@@ -113,10 +125,13 @@ class EnvRunner(object):
             self._eval_envs, self._episodes, self._episode_length, self._kill_signal,
             self._step_signal, self._rollout_generator, save_load_lock,
             self.current_replay_ratio, self.target_replay_ratio,
-            self._weightsdir)
-        training_envs = self._internal_env_runner.spin_up_envs('train_env', self._train_envs, False)
-        eval_envs = self._internal_env_runner.spin_up_envs('eval_env', self._eval_envs, True)
-        envs = training_envs + eval_envs
+            self._weightsdir,
+            device_list=(self.device_list[1:] if len(self.device_list) > 1 else None)
+            )
+        #training_envs = self._internal_env_runner.spin_up_envs('train_env', self._train_envs, False)
+        #eval_envs = self._internal_env_runner.spin_up_envs('eval_env', self._eval_envs, True)
+        #envs = training_envs + eval_envs
+        envs = self._internal_env_runner.spinup_train_and_eval(self._train_envs, self._eval_envs, 'env')
         no_transitions = {env.name: 0 for env in envs}
         while True:
             for p in envs:

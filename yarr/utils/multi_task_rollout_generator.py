@@ -51,6 +51,8 @@ class RolloutGenerator(object):
                 obs_history[k].pop(0)
 
             transition.info["active_task_id"] = env.active_task_id
+            transition.info["active_task_name"] = env.active_task_name
+
 
             replay_transition = ReplayTransition(
                 obs, act_result.action, transition.reward,

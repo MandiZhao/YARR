@@ -153,16 +153,17 @@ class SimpleAccumulator(StatAccumulator):
 
 class MultiTaskAccumulator(StatAccumulator):
 
-    def __init__(self, num_tasks,
+    def __init__(self, task_names,
                  eval_video_fps: int = 30, mean_only: bool = True,
                  train_prefix: str = 'train_task',
                  eval_prefix: str = 'eval_task'):
         self._train_accs = [_SimpleAccumulator(
-            '%s%d/envs' % (train_prefix, i), eval_video_fps, mean_only=mean_only)
-            for i in range(num_tasks)]
+            '%s%s/envs' % (train_prefix, name), eval_video_fps, mean_only=mean_only)
+            for name in task_names ]
         self._eval_accs = [_SimpleAccumulator(
-            '%s%d/envs' % (eval_prefix, i), eval_video_fps, mean_only=mean_only)
-            for i in range(num_tasks)]
+            '%s%s/envs' % (eval_prefix, name), eval_video_fps, mean_only=mean_only)
+            for name in task_names]
+
         self._train_accs_mean = _SimpleAccumulator(
             '%s_summary/envs' % train_prefix, eval_video_fps,
             mean_only=mean_only)

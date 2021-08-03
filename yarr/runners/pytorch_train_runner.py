@@ -43,6 +43,7 @@ class PyTorchTrainRunner(TrainRunner):
                  replay_ratio: Optional[float] = None,
                  tensorboard_logging: bool = True,
                  csv_logging: bool = False,
+                 wandb_logging: bool = False,
                  buffers_per_batch: int = -1  # -1 = all
                  ):
         super(PyTorchTrainRunner, self).__init__(
@@ -67,7 +68,7 @@ class PyTorchTrainRunner(TrainRunner):
 
         self._train_device = train_device
         self._tensorboard_logging = tensorboard_logging
-        self._csv_logging = csv_logging
+        #self._csv_logging = csv_logging
 
         if replay_ratio is not None and replay_ratio < 0:
             raise ValueError("max_replay_ratio must be positive.")
@@ -78,7 +79,7 @@ class PyTorchTrainRunner(TrainRunner):
             logging.info("'logdir' was None. No logging will take place.")
         else:
             self._writer = LogWriter(
-                self._logdir, tensorboard_logging, csv_logging)
+                self._logdir, tensorboard_logging, csv_logging, wandb_logging)
         if weightsdir is None:
             logging.info(
                 "'weightsdir' was None. No weight saving will take place.")
@@ -131,7 +132,7 @@ class PyTorchTrainRunner(TrainRunner):
         return sum([
             r.replay_buffer.add_count for r in self._wrapped_buffer])
 
-    def start(self):
+    def start(self, resume_dir: str = None):
 
         signal.signal(signal.SIGINT, self._signal_handler)
 
@@ -142,6 +143,9 @@ class PyTorchTrainRunner(TrainRunner):
 
         self._agent = copy.deepcopy(self._agent)
         self._agent.build(training=True, device=self._train_device)
+        if resume_dir is not None:
+            logging.info('Resuming from checkpoint weights:')
+            print(resume_dir)
 
         if self._weightsdir is not None:
             self._save_model(0)  # Save weights so workers can load.

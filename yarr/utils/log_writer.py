@@ -8,16 +8,19 @@ import torch
 from yarr.agents.agent import ScalarSummary, HistogramSummary, ImageSummary, \
     VideoSummary
 from torch.utils.tensorboard import SummaryWriter
-
+import wandb 
 
 class LogWriter(object):
 
     def __init__(self,
                  logdir: str,
                  tensorboard_logging: bool,
-                 csv_logging: bool):
+                 csv_logging: bool,
+                 wandb_logging: bool,
+                 ):
         self._tensorboard_logging = tensorboard_logging
         self._csv_logging = csv_logging
+        self._wandb_logging = wandb_logging
         os.makedirs(logdir, exist_ok=True)
         if tensorboard_logging:
             self._tf_writer = SummaryWriter(logdir)
@@ -29,6 +32,8 @@ class LogWriter(object):
     def add_scalar(self, i, name, value):
         if self._tensorboard_logging:
             self._tf_writer.add_scalar(name, value, i)
+        if self._wandb_logging:
+            wandb.log({name: value, name+'_step': i})
         if self._csv_logging:
             if len(self._row_data) == 0:
                 self._row_data['step'] = i
@@ -40,21 +45,36 @@ class LogWriter(object):
             try:
                 if isinstance(summary, ScalarSummary):
                     self.add_scalar(i, summary.name, summary.value)
-                elif self._tensorboard_logging:
-                    # if isinstance(summary, HistogramSummary):
-                    #     self._tf_writer.add_histogram(
-                    #         summary.name, summary.value, i)
-                    if isinstance(summary, ImageSummary):
-                        # Only grab first item in batch
-                        v = (summary.value if summary.value.ndim == 3 else
+                elif isinstance(summary, ImageSummary):
+                    v = (summary.value if summary.value.ndim == 3 else
                              summary.value[0])
+                    if self._tensorboard_logging:
                         self._tf_writer.add_image(summary.name, v, i)
-                    elif isinstance(summary, VideoSummary):
-                        # Only grab first item in batch
-                        v = (summary.value if summary.value.ndim == 5 else
+                    if self._wandb_logging:
+                        wandb.log({summary.name: wandb.Image(v), summary.name+"_step": i})
+                elif isinstance(summary, VideoSummary):
+                    v = (summary.value if summary.value.ndim == 5 else
                              np.array([summary.value]))
+                    if self._tensorboard_logging:
                         self._tf_writer.add_video(
                             summary.name, v, i, fps=summary.fps)
+                    if self._wandb_logging:
+                        wandb.log({summary.name: wandb.Video(v, fps=summary.fps), summary.name+"_step": i})
+                # elif self._tensorboard_logging:
+                #     # if isinstance(summary, HistogramSummary):
+                #     #     self._tf_writer.add_histogram(
+                #     #         summary.name, summary.value, i)
+                #     if isinstance(summary, ImageSummary):
+                #         # Only grab first item in batch
+                #         v = (summary.value if summary.value.ndim == 3 else
+                #              summary.value[0])
+                #         self._tf_writer.add_image(summary.name, v, i)
+                #     elif isinstance(summary, VideoSummary):
+                #         # Only grab first item in batch
+                #         v = (summary.value if summary.value.ndim == 5 else
+                #              np.array([summary.value]))
+                #         self._tf_writer.add_video(
+                #             summary.name, v, i, fps=summary.fps)
             except Exception as e:
                 logging.error('Error on summary: %s' % summary.name)
                 raise e

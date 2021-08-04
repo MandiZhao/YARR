@@ -37,7 +37,8 @@ class EnvRunner(object):
                  rollout_generator: RolloutGenerator = None,
                  weightsdir: str = None,
                  max_fails: int = 5,
-                 device_list: Union[List[int], None] = None
+                 device_list: Union[List[int], None] = None,
+                 share_buffer_across_tasks: bool = False
                  ):
         self._train_env = train_env
         self._eval_env = eval_env if eval_env else train_env
@@ -69,6 +70,7 @@ class EnvRunner(object):
 
         self._train_device = torch.device("cuda:%d" % int(device_list[0])) if len(device_list) >=1 else None 
         self._device_list = device_list 
+        self._share_buffer_across_tasks = share_buffer_across_tasks
 
     @property   
     def device_list(self):
@@ -101,6 +103,8 @@ class EnvRunner(object):
                 if add_to_buffer:
                     kwargs = dict(transition.observation)
                     replay_index = transition.info["active_task_id"]
+                    if self._share_buffer_across_tasks:
+                        replay_index = 0
                     rb = self._eval_replay_buffer[replay_index] if eval else self._train_replay_buffer[replay_index]
                     rb.add(
                         np.array(transition.action), transition.reward,

@@ -101,7 +101,7 @@ class PyTorchTrainRunner(TrainRunner):
     def _step(self, i, sampled_batch):
         update_dict = self._agent.update(i, sampled_batch)
         priority = update_dict['priority'].cpu().detach().numpy() if isinstance(update_dict['priority'], torch.Tensor) else np.numpy(update_dict['priority'])
-        indices = sampled_batch['indices'].cpu().detach().numpy()
+        indices  = sampled_batch['indices'].cpu().detach().numpy()
         acc_bs = 0
         for wb_idx, wb in enumerate(self._wrapped_buffer):
             bs = wb.replay_buffer.batch_size

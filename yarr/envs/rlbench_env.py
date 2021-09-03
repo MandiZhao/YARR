@@ -160,7 +160,6 @@ class RLBenchEnv(Env):
         return self._rlbench_env
 
 
-
 class MultiTaskRLBenchEnv(MultiTaskEnv):
 
     def __init__(self,
@@ -181,15 +180,23 @@ class MultiTaskRLBenchEnv(MultiTaskEnv):
             action_mode=action_mode, obs_config=observation_config,
             dataset_root=dataset_root, headless=headless)
         self._task = None
+        
         self._swap_task_every = swap_task_every
         self._rlbench_env
         self._episodes_this_task = 0
 
+        self._active_task_id = -1 
+        self._active_task_name = None 
+        self._active_variation_id = -1 
+
     def _set_new_task(self):
         self._active_task_id = np.random.randint(0, len(self._task_classes))
         task = self._task_classes[self._active_task_id]
-        self._active_task_name = self._task_names[self._active_task_id]
+        
         self._task = self._rlbench_env.get_task(task)
+        #print("setting new task:", task, self._task._variation_number) # just ranomly sample variation
+        self._active_variation_id = self._task._variation_number
+        self._active_task_name = f"{self._task_names[self._active_task_id]}_variation{self._active_variation_id}"
 
     def extract_obs(self, obs: Observation):
         return _extract_obs(obs, self._channels_last, self._observation_config)

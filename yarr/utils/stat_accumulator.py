@@ -169,7 +169,7 @@ class MultiTaskAccumulator(StatAccumulator):
             mean_only=mean_only)
 
     def step(self, transition: ReplayTransition, eval: bool):
-        replay_index = transition.info["active_task_id"]
+        replay_index = transition.info["task_id"]
         if eval:
             self._eval_accs[replay_index].step(transition, eval)
         else:

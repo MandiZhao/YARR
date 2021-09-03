@@ -66,16 +66,16 @@ class EnvRunner(object):
         self._total_transitions = {'train_envs': 0, 'eval_envs': 0}
         self.log_freq = 1000  # Will get overridden later
         self.target_replay_ratio = None  # Will get overridden later
-        self.current_replay_ratio = Value('f', -1)
-
-        self._train_device = torch.device("cuda:%d" % int(device_list[0])) if len(device_list) >=1 else None 
+        self.current_replay_ratio = Value('f', -1) 
+        
         self._device_list = device_list 
         self._share_buffer_across_tasks = share_buffer_across_tasks
 
     @property   
     def device_list(self):
-        if self._device_list is None:
-            return [i for i in range(torch.cuda.device_count())]
+        # if self._device_list is None:
+        #     return [i for i in range(torch.cuda.device_count())]
+        # NOTE: if never given gpus at __init__, don't use gpus even if some are avaliable for agent training 
         return deepcopy(self._device_list)
     
     def summaries(self) -> List[Summary]:
@@ -102,7 +102,8 @@ class EnvRunner(object):
                 add_to_buffer = (not eval) or self._eval_replay_buffer is not None
                 if add_to_buffer:
                     kwargs = dict(transition.observation)
-                    replay_index = transition.info["active_task_id"]
+                    kwargs.update(transition.info)
+                    replay_index = transition.info["task_id"]
                     if self._share_buffer_across_tasks:
                         replay_index = 0
                     rb = self._eval_replay_buffer[replay_index] if eval else self._train_replay_buffer[replay_index]
@@ -130,7 +131,7 @@ class EnvRunner(object):
             self._step_signal, self._rollout_generator, save_load_lock,
             self.current_replay_ratio, self.target_replay_ratio,
             self._weightsdir,
-            device_list=(self.device_list[1:] if len(self.device_list) > 1 else None)
+            device_list=(self.device_list if len(self.device_list) > 1 else None)
             )
         #training_envs = self._internal_env_runner.spin_up_envs('train_env', self._train_envs, False)
         #eval_envs = self._internal_env_runner.spin_up_envs('eval_env', self._eval_envs, True)
@@ -174,7 +175,8 @@ class EnvRunner(object):
 
     def start(self, save_load_lock):
         self._p = Thread(target=self._run, args=(save_load_lock,), daemon=True)
-        self._p.name = 'EnvRunnerThread'
+        self._p.name = 'EnvRunnerThread' 
+        
         self._p.start()
 
     def wait(self):

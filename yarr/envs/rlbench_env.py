@@ -188,15 +188,21 @@ class MultiTaskRLBenchEnv(MultiTaskEnv):
         self._active_task_id = -1 
         self._active_task_name = None 
         self._active_variation_id = -1 
+        self._choose_from = [i for i in range(len(self._task_classes))] # may be reset later to prioritize sampling certain tasks
 
     def _set_new_task(self):
-        self._active_task_id = np.random.randint(0, len(self._task_classes))
+        self._active_task_id = int(np.random.choice(self._choose_from))
         task = self._task_classes[self._active_task_id]
         
         self._task = self._rlbench_env.get_task(task)
         #print("setting new task:", task, self._task._variation_number) # just ranomly sample variation
         self._active_variation_id = self._task._variation_number
         self._active_task_name = f"{self._task_names[self._active_task_id]}_variation{self._active_variation_id}"
+
+    def set_avaliable_tasks(self, task_ids):
+        for _id in task_ids:
+            assert _id < len(self._task_names), f'Cannot sample task id {_id}'
+        self._choose_from = task_ids
 
     def extract_obs(self, obs: Observation):
         return _extract_obs(obs, self._channels_last, self._observation_config)

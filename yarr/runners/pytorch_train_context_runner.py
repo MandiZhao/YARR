@@ -6,7 +6,8 @@ import signal
 import sys
 import threading
 import time
-from multiprocessing import Lock
+from torch.multiprocessing import Lock, cpu_count
+# from multiprocessing import Lock, cpu_count
 from typing import Optional, List
 from typing import Union
 
@@ -20,8 +21,7 @@ from yarr.runners.env_runner import EnvRunner
 from yarr.runners.train_runner import TrainRunner
 from yarr.utils.log_writer import LogWriter
 from yarr.utils.stat_accumulator import StatAccumulator
-
-from multiprocessing import cpu_count
+ 
 from arm.demo_dataset import MultiTaskDemoSampler, RLBenchDemoDataset, collate_by_id
 from arm.models.slowfast  import TempResNet
 from torch.utils.data import DataLoader
@@ -34,24 +34,6 @@ NUM_WEIGHTS_TO_KEEP = 10
 TASK_ID='task_id'
 VAR_ID='variation_id'
 DEMO_KEY='front_rgb' # what to look for in the demo dataset
-
-def make_loader(cfg, mode, dataset):
-    variation_idxs, task_idxs = dataset.get_idxs()
-    sampler = MultiTaskDemoSampler(
-        variation_idxs_list=variation_idxs, # 1-1 maps from each variation to idx in dataset e.g. [[0,1], [2,3], [4,5]] belongs to 3 variations but 2 tasks
-        task_idxs_list=task_idxs,      # 1-1 maps from each task to all its variations e.g. [[0,1,2,3], [4,5]] collects variations by task
-        **(cfg.val_sampler if mode == 'val' else cfg.sampler),
-    )
-
-    collate_func = partial(collate_by_id, cfg.sampler.sample_mode+'_id')
-    loader = DataLoader(
-            dataset, 
-            batch_sampler=sampler,
-            num_workers=min(11, cpu_count()),
-            worker_init_fn=lambda w: np.random.seed(np.random.randint(2 ** 29) + w),
-            collate_fn=collate_func,
-            )
-    return loader 
 
 
 class PyTorchTrainContextRunner(TrainRunner):
@@ -78,6 +60,10 @@ class PyTorchTrainContextRunner(TrainRunner):
                  context_cfg: DictConfig = None,  # may want to more/less frequently update context
                  train_demo_dataset=None,
                  val_demo_dataset=None,
+                 context_device=None,
+                 no_context: bool = False, 
+                #  ctxt_train_loader = None,
+                #  ctxt_val_loader = None,
                  ):
         super(PyTorchTrainContextRunner, self).__init__(
             agent, env_runner, wrapped_replay_buffer,
@@ -100,6 +86,7 @@ class PyTorchTrainContextRunner(TrainRunner):
         #     raise ValueError('Sum of sampling rates should be 1.')
 
         self._train_device = train_device
+        self._context_device = context_device
         self._tensorboard_logging = tensorboard_logging
         #self._csv_logging = csv_logging
 
@@ -120,9 +107,19 @@ class PyTorchTrainContextRunner(TrainRunner):
             os.makedirs(self._weightsdir, exist_ok=True)
         self._buffers_per_batch = buffers_per_batch if buffers_per_batch > 0 else len(wrapped_replay_buffer)
 
+        self._no_context = no_context
+        if no_context:
+            logging.info('Warning! TrainRunner is not sampling/updating context')
         self._context_cfg = context_cfg
         self._train_demo_dataset = train_demo_dataset
         self._val_demo_dataset = val_demo_dataset
+
+        self.ctxt_train_iter = iter(train_demo_dataset) if train_demo_dataset is not None else None 
+        self.ctxt_val_iter = iter(val_demo_dataset) if val_demo_dataset is not None else None
+        # self.ctxt_train_loader = make_loader(self._context_cfg, 'train', self._train_demo_dataset)
+        # self.ctxt_val_loader = make_loader(self._context_cfg, 'val', self._val_demo_dataset)
+        #self.ctxt_train_loader = ctxt_train_loader
+        #self.ctxt_val_loader = ctxt_val_loader
 
     def _save_model(self, i):
         with self._save_load_lock:
@@ -134,7 +131,7 @@ class PyTorchTrainContextRunner(TrainRunner):
                 i - self._save_freq * NUM_WEIGHTS_TO_KEEP))
             if os.path.exists(prev_dir):
                 shutil.rmtree(prev_dir)
-
+    
     def _step(self, i, sampled_batch):
         update_dict = self._agent.update(i, sampled_batch)
         priority = update_dict['priority'].cpu().detach().numpy() if isinstance(update_dict['priority'], torch.Tensor) else np.numpy(update_dict['priority'])
@@ -176,10 +173,10 @@ class PyTorchTrainContextRunner(TrainRunner):
         self._save_load_lock = Lock()
         
         # Kick off the environments
-        # self._env_runner.start(self._save_load_lock)
+        self._env_runner.start(self._save_load_lock)
 
         self._agent = copy.deepcopy(self._agent)
-        self._agent.build(training=True, device=self._train_device)
+        self._agent.build(training=True, device=self._train_device, context_device=self._context_device)
         if resume_dir is not None:
             logging.info('Resuming from checkpoint weights:')
             print(resume_dir)
@@ -194,10 +191,7 @@ class PyTorchTrainContextRunner(TrainRunner):
                 (self._transitions_before_train, str(self._get_add_counts())))
 
         datasets = [r.dataset() for r in self._wrapped_buffer]
-        data_iter = [iter(d) for d in datasets]
-
-        ctxt_train_loader = make_loader(self._context_cfg, 'train', self._train_demo_dataset)
-        
+        data_iter = [iter(d) for d in datasets] 
          
         init_replay_size = self._get_sum_add_counts().astype(float)
         batch_times_buffers_per_sample = sum([
@@ -206,7 +200,7 @@ class PyTorchTrainContextRunner(TrainRunner):
         num_cpu = psutil.cpu_count()
 
         for i in range(self._iterations):
-            # self._env_runner.set_step(i)
+            self._env_runner.set_step(i)
 
             log_iteration = i % self._log_freq == 0 and i > 0
 
@@ -245,14 +239,13 @@ class PyTorchTrainContextRunner(TrainRunner):
                 result[key] = torch.stack([d[key] for d in sampled_batch], 1)
             sampled_batch = result
 
-            task_ids, variation_ids = sampled_batch[TASK_ID], sampled_batch[VAR_ID]
-            # print(task_ids, variation_ids)
-            demo_samples = self._train_demo_dataset.sample_for_replay(task_ids, variation_ids)
-            sampled_batch[CONTEXT_KEY] = torch.stack(
-                    [ d[DEMO_KEY][None] for d in demo_samples ])
-            # print(sampled_batch[CONTEXT_KEY].shape) # (bsize, 1, video_len, 3, 128, 128)
-            
-
+            if not self._no_context:
+                task_ids, variation_ids = sampled_batch[TASK_ID], sampled_batch[VAR_ID]
+                # this slows down sampling time ~6x 
+                demo_samples = self._train_demo_dataset.sample_for_replay(task_ids, variation_ids)
+                sampled_batch[CONTEXT_KEY] = torch.stack(
+                        [ d[DEMO_KEY][None] for d in demo_samples ])
+                # print(sampled_batch[CONTEXT_KEY].shape) # (bsize, 1, video_len, 3, 128, 128) 
             sample_time = time.time() - t
 
             batch = {k: v.to(self._train_device) for k, v in sampled_batch.items()}
@@ -260,15 +253,16 @@ class PyTorchTrainContextRunner(TrainRunner):
             self._step(i, batch)
             step_time = time.time() - t
 
-            if i % self._context_cfg.update_freq == 0:
+            if not self._no_context and i % self._context_cfg.update_freq == 0:
                 for _ in range(self._context_cfg.num_update_itrs):
-                    try:
-                        context_batch = next(ctxt_train_loader)
-                    except:
-                        StopIteration 
-                        ctxt_train_loader = make_loader(self._context_cfg, 'train', self._train_demo_dataset)
-                        context_batch = next(ctxt_train_loader)
-                    self._agent.update_context(context_batch)
+                    # try:
+                    #     context_batch = next(ctxt_train_iter)
+                    # except:
+                    #     StopIteration  
+                    #     ctxt_train_iter = iter(copy.deepcopy(self.ctxt_train_loader))
+                    #     context_batch = next(ctxt_train_iter)
+                    context_batch = next(self.ctxt_train_iter)
+                    context_update_dict = self._agent.update_context(i, context_batch)
                 if i % self._context_cfg.val_freq == 0:
                     self.validate_context(i)
 
@@ -325,8 +319,8 @@ class PyTorchTrainContextRunner(TrainRunner):
         [r.replay_buffer.shutdown() for r in self._wrapped_buffer]
 
     def validate_context(self, step):
-        ctxt_val_loader = make_loader(self._context_cfg, 'val', self._val_demo_dataset)
-        #for val_inp in ctxt_val_loader:
+        context_batch = next(self.ctxt_val_iter)
+        val_info = self._agent.validate_context(step, context_batch)
         return 
 
 

@@ -38,7 +38,7 @@ class EnvRunner(object):
                  weightsdir: str = None,
                  max_fails: int = 5,
                  device_list: Union[List[int], None] = None,
-                 share_buffer_across_tasks: bool = False
+                 share_buffer_across_tasks: bool = True
                  ):
         self._train_env = train_env
         self._eval_env = eval_env if eval_env else train_env
@@ -131,7 +131,7 @@ class EnvRunner(object):
             self._step_signal, self._rollout_generator, save_load_lock,
             self.current_replay_ratio, self.target_replay_ratio,
             self._weightsdir,
-            device_list=(self.device_list if len(self.device_list) > 1 else None)
+            device_list=(self.device_list if len(self.device_list) >= 1 else None)
             )
         #training_envs = self._internal_env_runner.spin_up_envs('train_env', self._train_envs, False)
         #eval_envs = self._internal_env_runner.spin_up_envs('eval_env', self._eval_envs, True)

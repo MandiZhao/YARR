@@ -155,8 +155,8 @@ class MultiTaskAccumulator(StatAccumulator):
 
     def __init__(self, task_names,
                  eval_video_fps: int = 30, mean_only: bool = True,
-                 train_prefix: str = 'train_task',
-                 eval_prefix: str = 'eval_task'):
+                 train_prefix: str = 'train_',
+                 eval_prefix: str = 'eval_'):
         self._train_accs = [_SimpleAccumulator(
             '%s%s/envs' % (train_prefix, name), eval_video_fps, mean_only=mean_only)
             for name in task_names ]
@@ -165,7 +165,7 @@ class MultiTaskAccumulator(StatAccumulator):
             for name in task_names]
 
         self._train_accs_mean = _SimpleAccumulator(
-            '%s_summary/envs' % train_prefix, eval_video_fps,
+            '%ssummary/envs' % train_prefix, eval_video_fps,
             mean_only=mean_only)
 
     def step(self, transition: ReplayTransition, eval: bool):
@@ -191,3 +191,8 @@ class MultiTaskAccumulator(StatAccumulator):
     def reset(self) -> None:
         self._train_accs_mean.reset()
         [acc.reset() for acc in self._train_accs + self._eval_accs]
+
+
+# class MultiVariationAccumulator(StatAccumulator):
+#     """ Stat not just different tasks but all their variations """
+    

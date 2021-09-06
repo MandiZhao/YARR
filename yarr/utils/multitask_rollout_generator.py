@@ -15,8 +15,10 @@ class RolloutGeneratorWithContext(object):
     """For each env step, also sample from the demo dataset to 
         generate context embeddings"""
 
-    def __init__(self, demo_dataset, sample_key='front_rgb'):
+    def __init__(self, demo_dataset=None, sample_key='front_rgb'):
         self._demo_dataset = demo_dataset 
+        if demo_dataset is None:
+            print('Warning! RolloutGenerator not sampling context from demo dataset')
         self._sample_key = sample_key 
 
     def _get_type(self, x):
@@ -28,10 +30,11 @@ class RolloutGeneratorWithContext(object):
     def sample_context(self, task_id, variation_id, task_name):
         """takes in an task_id from environment and sample some 
             demos from offline dataset"""
+        assert self._demo_dataset is not None, 'Cannot sample without demo dataset pre-loaded'
         data = self._demo_dataset.sample_one_variation(task_id, variation_id)
         assert task_name in data['name'], f"Expects {task_name} to be the prefix of {data['name']}"
-        demo_sample = data.get(self.sample_key, None)
-        assert demo_sample is not None, f"Key {self.sample_key} was not found in sampled data"
+        demo_sample = data.get(self._sample_key, None)
+        assert demo_sample is not None, f"Key {self._sample_key} was not found in sampled data"
         return demo_sample
 
     
@@ -42,13 +45,23 @@ class RolloutGeneratorWithContext(object):
         task_id = env._active_task_id
         variation_id = env._active_variation_id
         task_name = env._active_task_name
-        print(task_id, variation_id, task_name)
+        # print(task_id, variation_id, task_name)
         agent.reset()
         obs_history = {k: [np.array(v, dtype=self._get_type(v))] * timesteps for k, v in obs.items()}
+        demo_samples = None
         for step in range(episode_length):
 
             prepped_data = {k: np.array([v]) for k, v in obs_history.items()}
-            prepped_data[CONTEXT_KEY] = self.sample_context(task_id, variation_id, task_name)
+            prepped_data.update(
+                {
+                TASK_ID: env._active_task_id, 
+                VAR_ID: env._active_variation_id}
+            )
+            
+            if self._demo_dataset is not None:
+                demo_samples = self.sample_context(task_id, variation_id, task_name)
+                prepped_data[CONTEXT_KEY] = demo_samples
+            # print('rollout generator input:', prepped_data.keys())
             act_result = agent.act(step_signal.value, prepped_data,
                                    deterministic=eval)
 
@@ -80,6 +93,7 @@ class RolloutGeneratorWithContext(object):
             transition.info.update({
                 TASK_ID: env._active_task_id, 
                 VAR_ID: env._active_variation_id, #'task_name': env._active_task_name
+                'demo': False,
                 })
 
             replay_transition = ReplayTransition(
@@ -94,6 +108,11 @@ class RolloutGeneratorWithContext(object):
                 if len(act_result.observation_elements) > 0:
                     prepped_data = {k: np.array([v]) for k, v in
                                     obs_history.items()}
+                    if self._demo_dataset is not None:
+                        prepped_data[CONTEXT_KEY] = demo_samples
+                    prepped_data.update({
+                        TASK_ID: env._active_task_id, 
+                        VAR_ID: env._active_variation_id})
                     act_result = agent.act(step_signal.value, prepped_data,
                                            deterministic=eval)
                     agent_obs_elems_tp1 = {k: np.array(v) for k, v in

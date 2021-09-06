@@ -1,3 +1,6 @@
+""" Note how episode rollout videos are logged/generated: custom_rlbench_env_multitask records episodes,
+whenever terminal, returns as 'summaries' in act_result and send to multitask_rollout_generator, then 
+stay as part of _EnvRunner.stored_transitions and get returned to stat_accumulator by EnvRunner  """
 import copy
 import logging
 import os

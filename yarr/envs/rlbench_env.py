@@ -195,7 +195,8 @@ class MultiTaskRLBenchEnv(MultiTaskEnv):
         task = self._task_classes[self._active_task_id]
         
         self._task = self._rlbench_env.get_task(task)
-        #print("setting new task:", task, self._task._variation_number) # just ranomly sample variation
+        self._task.sample_variation()
+        # print("setting new task:", task, self._task._variation_number) # just ranomly sample variation
         self._active_variation_id = self._task._variation_number
         self._active_task_name = f"{self._task_names[self._active_task_id]}_variation{self._active_variation_id}"
 

@@ -5,6 +5,9 @@ import numpy as np
 from yarr.agents.agent import Summary, ScalarSummary
 from yarr.utils.transition import ReplayTransition
 
+from collections import deque 
+TASK_ID = 'task_id'
+VAR_ID = 'variation_id'
 
 class StatAccumulator(object):
 
@@ -20,7 +23,6 @@ class StatAccumulator(object):
     def reset(self) -> None:
         pass
 
-
 class Metric(object):
 
     def __init__(self):
@@ -35,7 +37,8 @@ class Metric(object):
         self._current = 0
 
     def reset(self):
-        self._previous.clear()
+        # self._previous.clear()
+        return 
 
     def min(self):
         return np.min(self._previous)
@@ -58,6 +61,13 @@ class Metric(object):
     def __getitem__(self, i):
         return self._previous[i]
 
+class DequeMetric(Metric):
+    """ Take mean over a fixed lengthh list of logged values """
+    def __init__(self, length=5):
+        self._previous = deque([], maxlen=length)
+        self._current = 0 
+        self._maxlen = length 
+ 
 
 class _SimpleAccumulator(StatAccumulator):
 
@@ -151,6 +161,136 @@ class SimpleAccumulator(StatAccumulator):
         self._eval_acc.reset()
 
 
+class SimpleMultiVariationAccumulator(StatAccumulator):
+    """ Use for one task, evenly tracks its variations """
+    def __init__(self, 
+                 prefix: str, 
+                 task_name: str,        # e.g. reach_target or push_button
+                 task_id: int,          # e.g. 0 or 1 
+                 task_vars: List[str],  # e.g. [reach_target_0, reach_target_1, ...]
+                 eval_video_fps: int = 30,
+                 mean_only: bool = True, 
+                 max_len: int = 5,
+                 task_id_key: str = 'task_id',
+                 var_id_key: str = 'variation_id'):
+        self._prefix = prefix
+        self._eval_video_fps = eval_video_fps
+        self._mean_only = mean_only
+        self._lock = Lock()
+        self._task_name = task_name
+        self._task_id = task_id
+        self._task_vars = task_vars 
+        self._all_var_returns = {_var: DequeMetric(max_len) for _var in task_vars}
+        self._all_var_lengths = {_var: DequeMetric(max_len) for _var in task_vars}
+        self._summaries = []
+        self._transitions = {_var: 0 for _var in task_vars}
+        self._task_id_key, self._var_id_key = task_id_key, var_id_key
+
+    def _reset_data(self):
+        with self._lock:
+            [metric.reset() for metric in self._all_var_returns]
+            [metric.reset() for metric in self._all_var_lengths]
+            self._summaries.clear()
+
+    def step(self, transition: ReplayTransition, eval: bool):
+        assert self._task_id_key in transition.info.keys() and \
+            self._var_id_key in transition.info.keys(), 'Not seeing the data for task or variation ID'
+    
+        if transition.info[self._task_id_key] == self._task_id:
+            var_str = f'{self._task_name}_{transition.info[self._var_id_key]}'
+            # print('\n', var_str) 
+            with self._lock:
+                self._transitions[var_str] += 1
+                self._all_var_returns[var_str].update(transition.reward)
+                self._all_var_lengths[var_str].update(1)
+                if transition.terminal:
+                    self._all_var_returns[var_str].next()
+                    self._all_var_lengths[var_str].next()
+                self._summaries.extend(list(transition.summaries))
+
+    def _get(self, _var) -> List[Summary]:
+        sums = []
+        stat_keys = ["mean"] if self._mean_only else \
+            ["min", "max", "mean", "median", "std"]
+        returns, lengths = self._all_var_returns[_var], self._all_var_lengths[_var]
+    
+        returns, lengths = self._all_var_returns[_var], self._all_var_lengths[_var]
+        for stat_key in stat_keys:
+            sum_name = f"{self._prefix}/{self._task_name}/{_var}/return/{stat_key}"
+            sums.append(
+                ScalarSummary(sum_name, getattr(returns, stat_key)()))
+
+            sum_name = f"{self._prefix}/{self._task_name}/{_var}/length/{stat_key}"
+            sums.append(
+                ScalarSummary(sum_name, getattr(lengths, stat_key)())
+                )
+    
+        sums.append(ScalarSummary(
+            f"{self._prefix}/{self._task_name}/{_var}/num_transitions", self._transitions[_var] ))
+         
+        return sums
+
+    # def pop(self) -> List[Summary]:
+    #     data = []
+    #     for k, v in self._all_var_returns.items():
+    #         if len(v) == v._maxlen :
+    #             data.extend(self._get(k))
+    #             # self._reset_data() NOTE(mandi): shouldn't need to bc of deque
+  
+    #     data.append(
+    #         ScalarSummary(f"{self._prefix}/{self._task_name}/total_transitions", \
+    #             sum(list(self._transitions.values()) ) ) )
+    #     data.extend(self._summaries)
+    #     self._summaries.clear()
+    #     return data
+    def pop(self) -> List[Summary]:
+        data = []
+        for k, v in self._all_var_returns.items():
+            if len(v) != v._maxlen :
+                return []  # doesn't log if any variation doesn't have enough value saved
+        
+        all_var_ret, all_var_len, all_var_trans = [], [], []
+        for _var in self._task_vars:
+            returns, lengths = self._all_var_returns[_var], self._all_var_lengths[_var]
+            all_var_ret.append( returns.mean() )
+            all_var_len.append( lengths.mean() )
+            all_var_trans.append(self._transitions[_var])
+        
+        for metric, values in zip(
+            ["num_transitions", "return", "length"], [all_var_trans, all_var_ret, all_var_len]):
+            data.append(
+                ScalarSummary(f"{self._prefix}_envs/{self._task_name}/{metric}_mean", \
+                np.mean(values))
+                )
+
+            data.append( 
+                ScalarSummary(f"{self._prefix}_envs/{self._task_name}/{metric}_std", \
+                np.std(values))
+                )
+        
+        data.extend(self._summaries)
+        self._summaries.clear()
+        return data
+
+    def peak(self) -> List[Summary]:
+        # data = []
+        # for k, v in self._all_var_returns.items():
+        #     if len(v) == v._maxlen :
+        #         data.extend(self._get(k))
+        #         # self._reset_data() NOTE(mandi): shouldn't need to bc of deque
+  
+        # data.append(
+        #     ScalarSummary(f"{self._prefix}/{self._task_name}/total_transitions", \
+        #         sum(list(self._transitions.values()) ) ) )
+        # data.extend(self._summaries)
+        # return data 
+        return self.pop()
+    
+    def reset(self):
+        # self._transitions = {_var: 0 for _var in self._task_vars}
+        # self._reset_data()
+        return 
+
 class MultiTaskAccumulator(StatAccumulator):
 
     def __init__(self, task_names,
@@ -193,6 +333,58 @@ class MultiTaskAccumulator(StatAccumulator):
         [acc.reset() for acc in self._train_accs + self._eval_accs]
 
 
-# class MultiVariationAccumulator(StatAccumulator):
-#     """ Stat not just different tasks but all their variations """
+class MultiTaskAccumulatorV2(StatAccumulator):
+    """ Make sure each task's performance is pooled over all the variations 
+        Stat not just different tasks but all their variations """
+    def __init__(self, 
+                 task_names: List[str],
+                 tasks_vars: List[List[str]], # [ [task_A_0, task_A_1,...], [task_B_0, ...] ]
+                 eval_video_fps: int = 30, 
+                 mean_only: bool = True,
+                 max_len: int = 5,
+                 train_prefix: str = 'train',
+                 eval_prefix: str = 'eval'
+                 ):
+
+        self._train_accs, self._eval_accs = [], [] 
+        for i, (task_name, its_vars) in enumerate( zip(task_names, tasks_vars) ):
+            self._train_accs.append(
+                SimpleMultiVariationAccumulator(
+                    train_prefix, task_name, i, its_vars, eval_video_fps, mean_only, max_len, TASK_ID, VAR_ID)
+            )
+
+            self._eval_accs.append(
+                SimpleMultiVariationAccumulator(
+                    eval_prefix, task_name, i, its_vars, eval_video_fps, mean_only, max_len, TASK_ID, VAR_ID)
+            )
+          
+        self._train_accs_mean = _SimpleAccumulator(
+            '%s_summary/all_tasks' % train_prefix, eval_video_fps,
+            mean_only=mean_only)
+
+    def step(self, transition: ReplayTransition, eval: bool):
+        replay_index = transition.info["task_id"]
+        if eval:
+            self._eval_accs[replay_index].step(transition, eval)
+        else:
+            self._train_accs[replay_index].step(transition, eval)
+            self._train_accs_mean.step(transition, eval)
+
+    def pop(self) -> List[Summary]:
+        combined = self._train_accs_mean.pop()
+        for acc in self._train_accs + self._eval_accs:
+            combined.extend(acc.pop())
+        return combined
+
+    def peak(self) -> List[Summary]:
+        combined = self._train_accs_mean.peak()
+        for acc in self._train_accs + self._eval_accs:
+            combined.extend(acc.peak())
+        return combined
+
+    def reset(self) -> None:
+        self._train_accs_mean.reset()
+        [acc.reset() for acc in self._train_accs + self._eval_accs]
+
+
     

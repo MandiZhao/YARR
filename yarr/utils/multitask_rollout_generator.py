@@ -45,7 +45,7 @@ class RolloutGeneratorWithContext(object):
         task_id = env._active_task_id
         variation_id = env._active_variation_id
         task_name = env._active_task_name
-        # print(task_id, variation_id, task_name)
+        #print('mt rollout gen:', task_id, variation_id, task_name)
         agent.reset()
         obs_history = {k: [np.array(v, dtype=self._get_type(v))] * timesteps for k, v in obs.items()}
         demo_samples = None
@@ -53,10 +53,9 @@ class RolloutGeneratorWithContext(object):
 
             prepped_data = {k: np.array([v]) for k, v in obs_history.items()}
             prepped_data.update(
-                {
-                TASK_ID: env._active_task_id, 
+                {TASK_ID: env._active_task_id, 
                 VAR_ID: env._active_variation_id}
-            )
+                )
             
             if self._demo_dataset is not None:
                 demo_samples = self.sample_context(task_id, variation_id, task_name)

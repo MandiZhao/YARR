@@ -184,6 +184,8 @@ class PyTorchTrainContextRunner(TrainRunner):
         if self._weightsdir is not None:
             self._save_model(0)  # Save weights so workers can load.
 
+        logging.info('Need %d samples before training. Currently have %s.' %
+                (self._transitions_before_train, str(self._get_add_counts())))
         while (np.any(self._get_add_counts() < self._transitions_before_train)):
             time.sleep(1)
             logging.info(
@@ -237,11 +239,13 @@ class PyTorchTrainContextRunner(TrainRunner):
             result = {}
             for key in sampled_batch[0]:
                 result[key] = torch.stack([d[key] for d in sampled_batch], 1)
+                # print('context runner:', sampled_batch[0][key].shape, result[key].shape )
             sampled_batch = result
 
             if not self._no_context:
                 task_ids, variation_ids = sampled_batch[TASK_ID], sampled_batch[VAR_ID]
                 # this slows down sampling time ~6x 
+                #print('trainer trying to match ids:', task_ids, variation_ids)
                 demo_samples = self._train_demo_dataset.sample_for_replay(task_ids, variation_ids)
                 sampled_batch[CONTEXT_KEY] = torch.stack(
                         [ d[DEMO_KEY][None] for d in demo_samples ])
@@ -265,7 +269,6 @@ class PyTorchTrainContextRunner(TrainRunner):
                     context_update_dict = self._agent.update_context(i, context_batch)
                 if i % self._context_cfg.val_freq == 0:
                     self.validate_context(i)
-
 
             if log_iteration and self._writer is not None:
                 replay_ratio = get_replay_ratio()
@@ -291,8 +294,7 @@ class PyTorchTrainContextRunner(TrainRunner):
                     i, 'replay/update_to_insert_ratio',
                     float(i) / float(
                         self._get_sum_add_counts() -
-                        init_replay_size + 1e-6))
-
+                        init_replay_size + 1e-6)) 
                 self._writer.add_scalar(
                     i, 'monitoring/sample_time_per_item',
                     sample_time / batch_times_buffers_per_sample)

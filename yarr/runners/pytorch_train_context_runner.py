@@ -201,10 +201,21 @@ class PyTorchTrainContextRunner(TrainRunner):
         process = psutil.Process(os.getpid())
         num_cpu = psutil.cpu_count()
 
+        context_step = 0 
+        for _ in range(self._context_cfg.pretrain_context_steps): 
+            context_batch = next(self.ctxt_train_iter)
+            context_update_dict = self._agent.update_context(context_step, context_batch)
+            context_step += 1
+            if context_step % self._context_cfg.val_freq == 0:
+                self.validate_context(context_step)
+            if context_step % self._log_freq == 0:
+                agent_summaries = self._agent.update_summaries() # should be context losses
+                self._writer.log_context_only(context_step, agent_summaries)
+
         for i in range(self._iterations):
             self._env_runner.set_step(i)
 
-            log_iteration = i % self._log_freq == 0 and i > 0
+            log_iteration = i % self._log_freq == 0  
 
             if log_iteration:
                 process.cpu_percent(interval=None)
@@ -258,17 +269,15 @@ class PyTorchTrainContextRunner(TrainRunner):
             step_time = time.time() - t
 
             if not self._no_context and i % self._context_cfg.update_freq == 0:
-                for _ in range(self._context_cfg.num_update_itrs):
-                    # try:
-                    #     context_batch = next(ctxt_train_iter)
-                    # except:
-                    #     StopIteration  
-                    #     ctxt_train_iter = iter(copy.deepcopy(self.ctxt_train_loader))
-                    #     context_batch = next(ctxt_train_iter)
+                for _ in range(self._context_cfg.num_update_itrs): 
                     context_batch = next(self.ctxt_train_iter)
                     context_update_dict = self._agent.update_context(i, context_batch)
-                if i % self._context_cfg.val_freq == 0:
-                    self.validate_context(i)
+                    context_step += 1
+                    if context_step % self._context_cfg.val_freq == 0:
+                        self.validate_context(context_step)
+                    if context_step % self._log_freq == 0:
+                        agent_summaries = self._agent.update_summaries() # should be context losses
+                        self._writer.log_context_only(context_step, agent_summaries)
 
             if log_iteration and self._writer is not None:
                 replay_ratio = get_replay_ratio()

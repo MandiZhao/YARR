@@ -40,6 +40,23 @@ class LogWriter(object):
             self._row_data[name] = value.item() if isinstance(
                 value, torch.Tensor) else value
 
+    def log_context_only(self, i, summaries):
+        wandb_log = {'Context Train step': i}
+        for summary in summaries:
+            try:
+                if isinstance(summary, ScalarSummary): 
+                    wandb_log.update( {summary.name: summary.value} )
+                elif isinstance(summary, ImageSummary):
+                    v = (summary.value if summary.value.ndim == 3 else
+                             summary.value[0]) 
+                    wandb_log.update( {summary.name: wandb.Image(v)} )
+                elif isinstance(summary, VideoSummary):
+                    v = (summary.value if summary.value.ndim == 5 else
+                             np.array([summary.value])) 
+                    wandb_log.update( {summary.name: wandb.Video(v, fps=summary.fps)} )
+        if self._wandb_logging:
+            wandb.log(wandb_log)
+
     def add_summaries(self, i, summaries):
         wandb_log = {'Train step': i}
         for summary in summaries:

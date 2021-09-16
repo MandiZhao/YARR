@@ -14,6 +14,7 @@ from typing import Union
 import numpy as np
 import psutil
 import torch
+import torch.nn.functional as F
 from yarr.agents.agent import Agent
 from yarr.replay_buffer.wrappers.pytorch_replay_buffer import \
     PyTorchReplayBuffer
@@ -62,6 +63,8 @@ class PyTorchTrainContextRunner(TrainRunner):
                  val_demo_dataset=None,
                  context_device=None,
                  no_context: bool = False, 
+                 one_hot: bool = False,
+                 num_vars: int = 20,
                 #  ctxt_train_loader = None,
                 #  ctxt_val_loader = None,
                  ):
@@ -116,10 +119,8 @@ class PyTorchTrainContextRunner(TrainRunner):
 
         self.ctxt_train_iter = iter(train_demo_dataset) if train_demo_dataset is not None else None 
         self.ctxt_val_iter = iter(val_demo_dataset) if val_demo_dataset is not None else None
-        # self.ctxt_train_loader = make_loader(self._context_cfg, 'train', self._train_demo_dataset)
-        # self.ctxt_val_loader = make_loader(self._context_cfg, 'val', self._val_demo_dataset)
-        #self.ctxt_train_loader = ctxt_train_loader
-        #self.ctxt_val_loader = ctxt_val_loader
+        self._one_hot = one_hot
+        self._num_vars = num_vars
 
     def _save_model(self, i):
         with self._save_load_lock:
@@ -209,7 +210,7 @@ class PyTorchTrainContextRunner(TrainRunner):
             if context_step % self._context_cfg.val_freq == 0:
                 self.validate_context(context_step)
             if context_step % self._log_freq == 0:
-                agent_summaries = self._agent.update_summaries() # should be context losses
+                agent_summaries = self._agent._context_agent.update_summaries() # only about context losses
                 self._writer.log_context_only(context_step, agent_summaries)
 
         for i in range(self._iterations):
@@ -257,8 +258,12 @@ class PyTorchTrainContextRunner(TrainRunner):
                 task_ids, variation_ids = sampled_batch[TASK_ID], sampled_batch[VAR_ID]
                 # this slows down sampling time ~6x 
                 #print('trainer trying to match ids:', task_ids, variation_ids)
-                demo_samples = self._train_demo_dataset.sample_for_replay(task_ids, variation_ids)
-                sampled_batch[CONTEXT_KEY] = torch.stack(
+                if self._one_hot:
+                    demo_samples = F.one_hot(torch.tensor(variation_ids, dtype=torch.int64), num_classes=self._num_vars)
+                    sampled_batch[CONTEXT_KEY] = demo_samples.clone().detach().to(torch.float32) 
+                else:
+                    demo_samples = self._train_demo_dataset.sample_for_replay(task_ids, variation_ids)
+                    sampled_batch[CONTEXT_KEY] = torch.stack(
                         [ d[DEMO_KEY][None] for d in demo_samples ])
                 # print(sampled_batch[CONTEXT_KEY].shape) # (bsize, 1, video_len, 3, 128, 128) 
             sample_time = time.time() - t
@@ -268,7 +273,7 @@ class PyTorchTrainContextRunner(TrainRunner):
             self._step(i, batch)
             step_time = time.time() - t
 
-            if not self._no_context and i % self._context_cfg.update_freq == 0:
+            if (not self._no_context) and (not self._one_hot) and (i % self._context_cfg.update_freq == 0):
                 for _ in range(self._context_cfg.num_update_itrs): 
                     context_batch = next(self.ctxt_train_iter)
                     context_update_dict = self._agent.update_context(i, context_batch)

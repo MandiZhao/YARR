@@ -54,6 +54,9 @@ class LogWriter(object):
                     v = (summary.value if summary.value.ndim == 5 else
                              np.array([summary.value])) 
                     wandb_log.update( {summary.name: wandb.Video(v, fps=summary.fps)} )
+            except Exception as e:
+                logging.error('Error on summary: %s' % summary.name)
+                raise e
         if self._wandb_logging:
             wandb.log(wandb_log)
 

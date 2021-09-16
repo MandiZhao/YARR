@@ -70,6 +70,7 @@ class EnvRunner(object):
         
         self._device_list = device_list 
         self._share_buffer_across_tasks = share_buffer_across_tasks
+        self._agent_summaries = []
 
     @property   
     def device_list(self):

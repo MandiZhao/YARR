@@ -7,6 +7,8 @@ from yarr.envs.env import Env
 from yarr.envs.env import MultiTaskEnv
 from yarr.envs.rlbench_env import MultiTaskRLBenchEnv
 from yarr.utils.transition import ReplayTransition
+import torch 
+import torch.nn.functional as F
 CONTEXT_KEY = 'demo_sample' 
 TASK_ID='task_id'
 VAR_ID='variation_id'
@@ -15,11 +17,13 @@ class RolloutGeneratorWithContext(object):
     """For each env step, also sample from the demo dataset to 
         generate context embeddings"""
 
-    def __init__(self, demo_dataset=None, sample_key='front_rgb'):
+    def __init__(self, demo_dataset=None, sample_key='front_rgb', one_hot=False, num_vars=20):
         self._demo_dataset = demo_dataset 
         if demo_dataset is None:
             print('Warning! RolloutGenerator not sampling context from demo dataset')
         self._sample_key = sample_key 
+        self._one_hot = one_hot 
+        self._num_vars = num_vars 
 
     def _get_type(self, x):
         if x.dtype == np.float64:
@@ -49,6 +53,8 @@ class RolloutGeneratorWithContext(object):
         agent.reset()
         obs_history = {k: [np.array(v, dtype=self._get_type(v))] * timesteps for k, v in obs.items()}
         demo_samples = None
+        one_hot_vec = F.one_hot(  torch.tensor(int(variation_id)), num_classes=self._num_vars)
+        one_hot_vec = one_hot_vec.clone().detach().to(torch.float32)
         for step in range(episode_length):
 
             prepped_data = {k: np.array([v]) for k, v in obs_history.items()}
@@ -60,6 +66,9 @@ class RolloutGeneratorWithContext(object):
             if self._demo_dataset is not None:
                 demo_samples = self.sample_context(task_id, variation_id, task_name)
                 prepped_data[CONTEXT_KEY] = demo_samples
+
+            if self._one_hot:
+                prepped_data[CONTEXT_KEY] = one_hot_vec   
             # print('rollout generator input:', prepped_data.keys())
             act_result = agent.act(step_signal.value, prepped_data,
                                    deterministic=eval)
@@ -71,7 +80,7 @@ class RolloutGeneratorWithContext(object):
                                  act_result.replay_elements.items()}
 
             transition = env.step(act_result)
-            assert env._active_task_name == task_name and env._active_task_id == task_id, \
+            assert env._active_task_name == task_name and env._active_task_id == task_id and env._active_variation_id == variation_id, \
                  'Something is wrong with RLBench Env, task {task_name} is replaced by {env.active_task_name} in middle of an episode'
             timeout = False
             if step == episode_length - 1:
@@ -109,6 +118,10 @@ class RolloutGeneratorWithContext(object):
                                     obs_history.items()}
                     if self._demo_dataset is not None:
                         prepped_data[CONTEXT_KEY] = demo_samples
+
+                    if self._one_hot:
+                        prepped_data[CONTEXT_KEY] = one_hot_vec
+
                     prepped_data.update({
                         TASK_ID: env._active_task_id, 
                         VAR_ID: env._active_variation_id})

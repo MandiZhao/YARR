@@ -11,7 +11,7 @@ from typing import Union
 import numpy as np
 
 from yarr.agents.agent import Agent
-from yarr.agents.agent import ScalarSummary
+from yarr.agents.agent import ScalarSummary, ImageSummary, VideoSummary
 from yarr.agents.agent import Summary
 from yarr.envs.env import Env
 from yarr.replay_buffer.replay_buffer import ReplayBuffer
@@ -89,6 +89,7 @@ class EnvRunner(object):
             summaries.append(ScalarSummary('%s/total_transitions' % key, value))
         self._new_transitions = {'train_envs': 0, 'eval_envs': 0}
         summaries.extend(self._agent_summaries)
+        
         return summaries
 
     def _update(self):
@@ -100,6 +101,7 @@ class EnvRunner(object):
             if self._step_signal.value % self.log_freq == 0 and self._step_signal.value > 0:
                 self._internal_env_runner.agent_summaries[:] = []
             for name, transition, eval in self._internal_env_runner.stored_transitions:
+                
                 add_to_buffer = (not eval) or self._eval_replay_buffer is not None
                 if add_to_buffer:
                     kwargs = dict(transition.observation)

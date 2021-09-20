@@ -2,7 +2,7 @@ from multiprocessing import Lock
 from typing import List
 
 import numpy as np
-from yarr.agents.agent import Summary, ScalarSummary
+from yarr.agents.agent import Summary, ScalarSummary, VideoSummary
 from yarr.utils.transition import ReplayTransition
 
 from collections import deque 
@@ -193,6 +193,7 @@ class SimpleMultiVariationAccumulator(StatAccumulator):
             self._summaries.clear()
 
     def step(self, transition: ReplayTransition, eval: bool):
+        # print('stat accum:', [isinstance(s, VideoSummary) for s in transition.summaries ])
         assert self._task_id_key in transition.info.keys() and \
             self._var_id_key in transition.info.keys(), 'Not seeing the data for task or variation ID'
     
@@ -266,6 +267,16 @@ class SimpleMultiVariationAccumulator(StatAccumulator):
             data.append( 
                 ScalarSummary(f"{self._prefix}_envs/{self._task_name}/{metric}_std", \
                 np.std(values))
+                )
+
+            data.append( 
+                ScalarSummary(f"{self._prefix}_envs/{self._task_name}/{metric}_max", \
+                np.max(values))
+                )
+
+            data.append( 
+                ScalarSummary(f"{self._prefix}_envs/{self._task_name}/{metric}_min", \
+                np.min(values))
                 )
         
         data.extend(self._summaries)

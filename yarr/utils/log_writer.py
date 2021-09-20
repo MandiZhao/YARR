@@ -81,18 +81,21 @@ class LogWriter(object):
                              summary.value[0])
                     if self._tensorboard_logging:
                         self._tf_writer.add_image(summary.name, v, i)
-                    img_name = f'TrainStep{i}/'+ summary.name 
+                    # img_name = f'TrainStep{i}/'+ summary.name 
+                    img_name = summary.name 
                     if self._logged_images[img_name] < self._num_img_limit:
                         wandb_log.update( {img_name: wandb.Image(v)} )
                         self._logged_images[img_name] += 1
-
+ 
                 elif isinstance(summary, VideoSummary): 
                     v = (summary.value if summary.value.ndim == 5 else
                              np.array([summary.value]))
                     if self._tensorboard_logging:
                         self._tf_writer.add_video(
                             summary.name, v, i, fps=summary.fps)
-                    vid_name = f'TrainStep{i}/'+ summary.name 
+                   
+                    vid_name = summary.name # f'TrainStep{i}/'+ summary.name 
+                    print('logging video', vid_name)
                     if self._logged_images[vid_name] < self._num_vid_limit:
                         wandb_log.update( {vid_name: wandb.Video(v, fps=summary.fps)} )
                         self._logged_videos[vid_name] += 1 

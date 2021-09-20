@@ -1,7 +1,7 @@
 import csv
 import logging
 import os
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 
 import numpy as np
 import torch
@@ -17,11 +17,19 @@ class LogWriter(object):
                  tensorboard_logging: bool,
                  csv_logging: bool,
                  wandb_logging: bool,
+                 num_video_limit: int = 2,
+                 num_img_limit: int = 2, # keep better track of logged media and add step info 
                  ):
         self._tensorboard_logging = tensorboard_logging
         self._csv_logging = csv_logging
         self._wandb_logging = wandb_logging
         os.makedirs(logdir, exist_ok=True)
+ 
+        self._logged_videos = defaultdict(int)
+        self._num_vid_limit = num_video_limit
+        self._num_img_limit = num_img_limit
+        self._logged_images = defaultdict(int)
+
         if tensorboard_logging:
             self._tf_writer = SummaryWriter(logdir)
         if csv_logging:
@@ -67,19 +75,28 @@ class LogWriter(object):
                 if isinstance(summary, ScalarSummary):
                     self.add_scalar(i, summary.name, summary.value)
                     wandb_log.update( {summary.name: summary.value} )
+
                 elif isinstance(summary, ImageSummary):
                     v = (summary.value if summary.value.ndim == 3 else
                              summary.value[0])
                     if self._tensorboard_logging:
                         self._tf_writer.add_image(summary.name, v, i)
-                    wandb_log.update( {summary.name: wandb.Image(v)} )
-                elif isinstance(summary, VideoSummary):
+                    img_name = f'TrainStep{i}/'+ summary.name 
+                    if self._logged_images[img_name] < self._num_img_limit:
+                        wandb_log.update( {img_name: wandb.Image(v)} )
+                        self._logged_images[img_name] += 1
+
+                elif isinstance(summary, VideoSummary): 
                     v = (summary.value if summary.value.ndim == 5 else
                              np.array([summary.value]))
                     if self._tensorboard_logging:
                         self._tf_writer.add_video(
                             summary.name, v, i, fps=summary.fps)
-                    wandb_log.update( {summary.name: wandb.Video(v, fps=summary.fps)} )
+                    vid_name = f'TrainStep{i}/'+ summary.name 
+                    if self._logged_images[vid_name] < self._num_vid_limit:
+                        wandb_log.update( {vid_name: wandb.Video(v, fps=summary.fps)} )
+                        self._logged_videos[vid_name] += 1 
+                        
                 # elif self._tensorboard_logging:
                 #     # if isinstance(summary, HistogramSummary):
                 #     #     self._tf_writer.add_histogram(

@@ -291,6 +291,7 @@ class SimpleMultiVariationAccumulator(StatAccumulator):
         # self._reset_data()
         return 
 
+
 class MultiTaskAccumulator(StatAccumulator):
 
     def __init__(self, task_names,

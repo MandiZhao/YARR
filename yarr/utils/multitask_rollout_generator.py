@@ -43,8 +43,7 @@ class RolloutGeneratorWithContext(object):
 
     
     def generator(self, step_signal: Value, env: Env, agent: Agent,
-                  episode_length: int, timesteps: int, eval: bool):
-        
+                  episode_length: int, timesteps: int, eval: bool): 
         obs     = env.reset()
         task_id = env._active_task_id
         variation_id = env._active_variation_id
@@ -92,6 +91,7 @@ class RolloutGeneratorWithContext(object):
                         transition.info["needs_reset"] = True
 
             obs.update(agent_obs_elems)
+            obs.update(extra_replay_elements)
             obs_tp1 = dict(transition.observation)
 
             for k in obs_history.keys():
@@ -105,11 +105,16 @@ class RolloutGeneratorWithContext(object):
                 })
 
             replay_transition = ReplayTransition(
-                obs, act_result.action, transition.reward,
-                transition.terminal,
-                timeout, obs_tp1, agent_extra_elems,
-                transition.info)
- 
+                observation=obs, action=act_result.action, reward=transition.reward,
+                terminal=transition.terminal, timeout=timeout,  
+                info=transition.info,
+                summaries=transition.summaries,)
+
+            if transition.terminal and len(transition.summaries) > 1:
+                print('rollout generator got video:', \
+                    transition.summaries[0].name, transition.summaries[0].value.shape )
+                raise ValueError
+
             if transition.terminal or timeout:
                 # If the agent gives us observations then we need to call act
                 # one last time (i.e. acting in the terminal state).

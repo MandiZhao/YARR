@@ -253,6 +253,10 @@ class SimpleMultiVariationAccumulator(StatAccumulator):
         all_var_ret, all_var_len, all_var_trans = [], [], []
         for _var in self._task_vars:
             returns, lengths = self._all_var_returns[_var], self._all_var_lengths[_var]
+            data.append(
+                ScalarSummary(f"{self._prefix}_envs/{self._task_name}/{_var}_returns", \
+                returns.mean())
+                )
             all_var_ret.append( returns.mean() )
             all_var_len.append( lengths.mean() )
             all_var_trans.append(self._transitions[_var])

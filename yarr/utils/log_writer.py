@@ -17,8 +17,8 @@ class LogWriter(object):
                  tensorboard_logging: bool,
                  csv_logging: bool,
                  wandb_logging: bool,
-                 num_video_limit: int = 2,
-                 num_img_limit: int = 2, # keep better track of logged media and add step info 
+                 num_video_limit: int = 100,
+                 num_img_limit: int = 100, # keep better track of logged media and add step info 
                  ):
         self._tensorboard_logging = tensorboard_logging
         self._csv_logging = csv_logging
@@ -95,7 +95,7 @@ class LogWriter(object):
                             summary.name, v, i, fps=summary.fps)
                    
                     vid_name = summary.name # f'TrainStep{i}/'+ summary.name 
-                    print('logging video', vid_name)
+                    
                     if self._logged_images[vid_name] < self._num_vid_limit:
                         wandb_log.update( {vid_name: wandb.Video(v, fps=summary.fps)} )
                         self._logged_videos[vid_name] += 1 

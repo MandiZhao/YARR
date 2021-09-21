@@ -31,6 +31,8 @@ from omegaconf import DictConfig
 from arm.c2farm.context_agent import CONTEXT_KEY # the key context agent looks for in replay samples
 from functools import partial 
 
+from accelerate import Accelerator
+
 NUM_WEIGHTS_TO_KEEP = 10
 TASK_ID='task_id'
 VAR_ID='variation_id'
@@ -174,10 +176,15 @@ class PyTorchTrainContextRunner(TrainRunner):
         self._save_load_lock = Lock()
         
         # Kick off the environments
-        self._env_runner.start(self._save_load_lock)
+        # self._env_runner.start(self._save_load_lock)
 
         self._agent = copy.deepcopy(self._agent)
-        self._agent.build(training=True, device=self._train_device, context_device=self._context_device)
+
+        self._accelerator = Accelerator()
+        print('accelerator:', self._accelerator._get_devices())
+        self._agent.build(training=True, device=self._train_device, context_device=self._context_device, accelerator=self._accelerator)
+        
+
         if resume_dir is not None:
             logging.info('Resuming from checkpoint weights:')
             print(resume_dir)
@@ -194,6 +201,7 @@ class PyTorchTrainContextRunner(TrainRunner):
                 (self._transitions_before_train, str(self._get_add_counts())))
 
         datasets = [r.dataset() for r in self._wrapped_buffer]
+        datasets = [ self._accelerator.prepare(d) for d in datasets ]
         data_iter = [iter(d) for d in datasets] 
          
         init_replay_size = self._get_sum_add_counts().astype(float)

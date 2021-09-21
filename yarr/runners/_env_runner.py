@@ -22,6 +22,7 @@ except RuntimeError:
     pass
 
 import torch 
+from accelerate import Accelerator
 
 class _EnvRunner(object):
 
@@ -147,6 +148,9 @@ class _EnvRunner(object):
         self._agent = copy.deepcopy(self._agent)
         
         proc_device = self._device_list[int(proc_idx % self._num_device)] if self._device_list is not None else None
+        
+        # self._accelerator = Accelerator()
+        # self._agent.build(training=False, device=proc_device, accelerator=self._accelerator)
         self._agent.build(training=False, device=proc_device)
 
         logging.info('%s: Launching env.' % name)

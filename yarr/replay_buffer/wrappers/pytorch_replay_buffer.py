@@ -11,6 +11,7 @@ class PyTorchIterableReplayDataset(IterableDataset):
 
     def __init__(self, replay_buffer: ReplayBuffer):
         self._replay_buffer = replay_buffer
+        self.batch_size = replay_buffer._batch_size 
 
     def _generator(self):
         while True:
@@ -76,4 +77,4 @@ class PyTorchReplayBuffer(WrappedReplayBuffer):
         # d = PyTorchIterableReplayDataset(self._replay_buffer, self._num_workers)
         d = PyTorchIterableReplayDataset(self._replay_buffer)
         # Batch size None disables automatic batching
-        return DataLoader(d, batch_size=None, pin_memory=True)
+        return DataLoader(d, batch_size=d.batch_size, pin_memory=True)

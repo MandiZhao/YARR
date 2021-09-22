@@ -38,7 +38,8 @@ class EnvRunner(object):
                  weightsdir: str = None,
                  max_fails: int = 5,
                  device_list: Union[List[int], None] = None,
-                 share_buffer_across_tasks: bool = True
+                 share_buffer_across_tasks: bool = True,
+                 buffer_key: str = 'variation_id',
                  ):
         self._train_env = train_env
         self._eval_env = eval_env if eval_env else train_env
@@ -70,6 +71,7 @@ class EnvRunner(object):
         
         self._device_list = device_list 
         self._share_buffer_across_tasks = share_buffer_across_tasks
+        self._buffer_key = buffer_key
         self._agent_summaries = []
 
     @property   
@@ -106,7 +108,9 @@ class EnvRunner(object):
                 if add_to_buffer:
                     kwargs = dict(transition.observation)
                     kwargs.update(transition.info)
-                    replay_index = transition.info["task_id"]
+                    assert self._buffer_key in transition.info.keys(), \
+                        f'Need to look for **{self._buffer_key}** in replay transition to know which buffer to add it to'
+                    replay_index = transition.info[self._buffer_key] 
                     if self._share_buffer_across_tasks:
                         replay_index = 0
                     rb = self._eval_replay_buffer[replay_index] if eval else self._train_replay_buffer[replay_index]

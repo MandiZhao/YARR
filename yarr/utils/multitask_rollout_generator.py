@@ -57,10 +57,9 @@ class RolloutGeneratorWithContext(object):
         for step in range(episode_length):
 
             prepped_data = {k: np.array([v]) for k, v in obs_history.items()}
-            prepped_data.update(
-                {TASK_ID: env._active_task_id, 
-                VAR_ID: env._active_variation_id}
-                )
+            prepped_data.update({
+                TASK_ID: task_id, 
+                VAR_ID: variation_id})
             
             if self._demo_dataset is not None:
                 demo_samples = self.sample_context(task_id, variation_id, task_name)
@@ -99,8 +98,8 @@ class RolloutGeneratorWithContext(object):
                 obs_history[k].pop(0)
 
             transition.info.update({
-                TASK_ID: env._active_task_id, 
-                VAR_ID: env._active_variation_id, #'task_name': env._active_task_name
+                TASK_ID: task_id, 
+                VAR_ID: variation_id, #'task_name': env._active_task_name
                 'demo': False,
                 })
 
@@ -126,8 +125,8 @@ class RolloutGeneratorWithContext(object):
                         prepped_data[CONTEXT_KEY] = one_hot_vec
 
                     prepped_data.update({
-                        TASK_ID: env._active_task_id, 
-                        VAR_ID: env._active_variation_id})
+                        TASK_ID: task_id, 
+                        VAR_ID: variation_id})
                     act_result = agent.act(step_signal.value, prepped_data,
                                            deterministic=eval)
                     agent_obs_elems_tp1 = {k: np.array(v) for k, v in

@@ -168,9 +168,11 @@ class MultiTaskRLBenchEnv(MultiTaskEnv):
                  observation_config: ObservationConfig,
                  action_mode: ActionMode,
                  dataset_root: str = '',
-                 channels_last=False,
-                 headless=True,
-                 swap_task_every: int = 1):
+                 channels_last = False,
+                 headless: bool = True,
+                 swap_task_every: int = 1, 
+                 use_variations: List[int] = [], # optionally only sample from a subset of vars here 
+                 ):
         super(MultiTaskRLBenchEnv, self).__init__()
         self._task_classes = task_classes
         self._task_names = task_names 
@@ -188,14 +190,27 @@ class MultiTaskRLBenchEnv(MultiTaskEnv):
         self._active_task_id = -1 
         self._active_task_name = None 
         self._active_variation_id = -1 
-        self._choose_from = [i for i in range(len(self._task_classes))] # may be reset later to prioritize sampling certain tasks
-
+        self._use_tasks = [i for i in range(len(self._task_classes))] # may be reset later to prioritize sampling certain tasks
+        self._use_variations  = use_variations  
+        
+        
     def _set_new_task(self):
-        self._active_task_id = int(np.random.choice(self._choose_from))
+        self._active_task_id = int(np.random.choice(self._use_tasks))
         task = self._task_classes[self._active_task_id]
         
         self._task = self._rlbench_env.get_task(task)
-        self._task.sample_variation()
+        if len(self._use_variations) > 0:
+            _var = int(np.random.choice(self._use_variations))
+            assert self._task._variation_number in self._use_variations, f'This Env should not be sampling other variations than {self._use_variations} '
+        
+        else:
+            _var = int(np.random.choice(self._task.variation_count()))
+        self._task.set_variation(_var)
+        # if not self._single_variation:
+        #     self._task.sample_variation()
+        # else:
+        #     assert self._task._variation_number == 0, 'This Env should not be sampling other variations than #0 '
+        
         # print("setting new task:", task, self._task._variation_number) # just ranomly sample variation
         self._active_variation_id = self._task._variation_number
         self._active_task_name = f"{self._task_names[self._active_task_id]}_variation{self._active_variation_id}"

@@ -261,12 +261,14 @@ class PyTorchTrainContextRunner(TrainRunner):
 
             t = time.time()
 
-            sampled_buf_ids = np.random.choice(
+            sampled_buf_ids = [0] if len(datasets) == 1 else np.random.choice(
                 range(len(datasets)), self._buffers_per_batch, replace=False)
             sampled_batch = []
             for j in sampled_buf_ids:
                 one_buf = next(data_iter[j]) 
-                one_buf['buffer_id'] = torch.tensor([j for _ in range(self._wrapped_buffer[j].replay_buffer.batch_size) ], dtype=torch.int64)
+                one_buf['buffer_id'] = torch.tensor(
+                    [j for _ in range(self._wrapped_buffer[j].replay_buffer.batch_size) ], 
+                    dtype=torch.int64)
                 sampled_batch.append(one_buf)
             result = {}
             for key in sampled_batch[0]:

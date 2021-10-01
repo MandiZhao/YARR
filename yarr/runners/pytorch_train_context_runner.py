@@ -284,7 +284,7 @@ class PyTorchTrainContextRunner(TrainRunner):
                     )
                 # NOTE: WITH replacement for now 
                 # np.random.choice(range(len(datasets)), self._buffers_per_batch, replace=False)
-                print('SAMPLED IDS', sampled_buf_ids)
+                # print('SAMPLED IDS', sampled_buf_ids)
             sampled_batch = []
             for j in sampled_buf_ids:
                 one_buf = next(data_iter[j]) 
@@ -327,10 +327,7 @@ class PyTorchTrainContextRunner(TrainRunner):
             t = time.time()
             self._step(i, batch, sampled_buf_ids)
             step_time = time.time() - t
-            
-            if i % 50 == 0: # log those histograms more freq. 
-                self._writer.add_summaries(i, buffer_summaries )
-
+             
             if (not self._no_context) and (not self._one_hot) and (i % self._context_cfg.update_freq == 0):
                 for _ in range(self._context_cfg.num_update_itrs): 
                     context_batch = next(self.ctxt_train_iter)
@@ -350,7 +347,7 @@ class PyTorchTrainContextRunner(TrainRunner):
                              i, sample_time, step_time, replay_ratio))
                 agent_summaries = self._agent.update_summaries()
                 env_summaries = self._env_runner.summaries()
-                self._writer.add_summaries(i, agent_summaries + env_summaries)
+                self._writer.add_summaries(i, agent_summaries + env_summaries + buffer_summaries)
 
                 for r_i, wrapped_buffer in enumerate(self._wrapped_buffer):
                     self._writer.add_scalar(

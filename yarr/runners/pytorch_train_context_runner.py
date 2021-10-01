@@ -22,7 +22,9 @@ from yarr.runners.env_runner import EnvRunner
 from yarr.runners.train_runner import TrainRunner
 from yarr.utils.log_writer import LogWriter
 from yarr.utils.stat_accumulator import StatAccumulator
- 
+from yarr.agents.agent import ScalarSummary, HistogramSummary, ImageSummary, \
+    VideoSummary
+
 from arm.demo_dataset import MultiTaskDemoSampler, RLBenchDemoDataset, collate_by_id
 from arm.models.slowfast  import TempResNet
 from torch.utils.data import DataLoader
@@ -65,6 +67,7 @@ class PyTorchTrainContextRunner(TrainRunner):
                  no_context: bool = False, 
                  one_hot: bool = False,
                  num_vars: int = 20,
+                 update_buffer_prio: bool = True, 
                 #  ctxt_train_loader = None,
                 #  ctxt_val_loader = None,
                  ):
@@ -78,16 +81,14 @@ class PyTorchTrainContextRunner(TrainRunner):
         env_runner.target_replay_ratio = replay_ratio
         self._wrapped_buffer = wrapped_replay_buffer if isinstance(
             wrapped_replay_buffer, list) else [wrapped_replay_buffer]
-        self._replay_buffer_sample_rates = (
-            [1.0] if replay_buffer_sample_rates is None else
-            replay_buffer_sample_rates)
-        if len(self._replay_buffer_sample_rates) != len(wrapped_replay_buffer):
-            logging.warning(
-                'Numbers of replay buffers differs from sampling rates. Setting as uniform sampling.')
-            self._replay_buffer_sample_rates = [1.0 / len(self._wrapped_buffer)] * len(self._wrapped_buffer)
-        # if sum(self._replay_buffer_sample_rates) != 1:
-        #     raise ValueError('Sum of sampling rates should be 1.')
-
+        self._num_total_buffers = len(self._wrapped_buffer)
+        self._buffers_per_batch = buffers_per_batch if buffers_per_batch > 0 else self._num_total_buffers
+        self._buffer_sample_rates = [1.0 / self._num_total_buffers for _ in range(len(wrapped_replay_buffer))]
+        self._per_buffer_error = [100 for  _ in range(len(wrapped_replay_buffer))]
+        self._update_buffer_prio = update_buffer_prio
+        logging.info(f'Created a list of prioties for {self._num_total_buffers} buffers, each batch samples from {self._buffers_per_batch} of them, \
+            Updating priorities for choosing buffers? **{self._update_buffer_prio}**')
+ 
         self._train_device = train_device
         self._context_device = context_device
         self._tensorboard_logging = tensorboard_logging
@@ -108,7 +109,7 @@ class PyTorchTrainContextRunner(TrainRunner):
                 "'weightsdir' was None. No weight saving will take place.")
         else:
             os.makedirs(self._weightsdir, exist_ok=True)
-        self._buffers_per_batch = buffers_per_batch if buffers_per_batch > 0 else len(wrapped_replay_buffer)
+        
 
         self._no_context = no_context
         if no_context:
@@ -121,6 +122,7 @@ class PyTorchTrainContextRunner(TrainRunner):
         self.ctxt_val_iter = iter(val_demo_dataset) if val_demo_dataset is not None else None
         self._one_hot = one_hot
         self._num_vars = num_vars
+         
 
     def _save_model(self, i):
         with self._save_load_lock:
@@ -138,9 +140,10 @@ class PyTorchTrainContextRunner(TrainRunner):
         # new version: use mask select
         prio_key = 'priority' 
         priority = update_dict[prio_key] 
+        buff_priority = update_dict['var_prio'] 
         indices = sampled_batch['indices']
         # print('context runner: returned priorities', priority)
-
+        new_buff_prio = []
         for buf_id in buffer_ids:
             buf_mask = sampled_batch['buffer_id'] == buf_id 
             indices_ = torch.masked_select(indices, buf_mask)
@@ -148,7 +151,17 @@ class PyTorchTrainContextRunner(TrainRunner):
             self._wrapped_buffer[buf_id].replay_buffer.set_priority(
                 indices_.cpu().detach().numpy(), 
                 priority_.cpu().detach().numpy())
-        
+            
+            if len(buffer_ids) > 0 and  self._update_buffer_prio:
+                buffer_prio = torch.masked_select(buff_priority, buf_mask) 
+                assert torch.all(buffer_prio[0] == buffer_prio)
+                self._per_buffer_error[buf_id] = buffer_prio[0].cpu().detach().item()
+
+        if self._update_buffer_prio:
+            sum_error = sum(self._per_buffer_error)
+            self._buffer_sample_rates = [ e/sum_error for e in self._per_buffer_error]
+            # print('updated buffer sample rates:', self._buffer_sample_rates) 
+
         # prio_key = 'priority' 
         # priority = update_dict[prio_key].cpu().detach().numpy() if isinstance(update_dict[prio_key], torch.Tensor) \
         #     else np.numpy(update_dict[prio_key])
@@ -213,8 +226,7 @@ class PyTorchTrainContextRunner(TrainRunner):
         data_iter = [iter(d) for d in datasets] 
          
         init_replay_size = self._get_sum_add_counts().astype(float)
-        batch_times_buffers_per_sample = sum([
-            r.replay_buffer.batch_size for r in self._wrapped_buffer[:self._buffers_per_batch]])
+        batch_times_buffers_per_sample = sum([r.replay_buffer.batch_size for r in self._wrapped_buffer[:self._buffers_per_batch]])
         process = psutil.Process(os.getpid())
         num_cpu = psutil.cpu_count()
 
@@ -261,8 +273,18 @@ class PyTorchTrainContextRunner(TrainRunner):
 
             t = time.time()
 
-            sampled_buf_ids = [0] if len(datasets) == 1 else np.random.choice(
-                range(len(datasets)), self._buffers_per_batch, replace=False)
+            if len(datasets) == 1:
+                sampled_buf_ids = [0] 
+            else:
+                sampled_buf_ids = np.random.choice(
+                    a=range(len(datasets)), 
+                    size=self._buffers_per_batch, 
+                    replace=False, 
+                    p=self._buffer_sample_rates
+                    )
+                # NOTE: WITH replacement for now 
+                # np.random.choice(range(len(datasets)), self._buffers_per_batch, replace=False)
+                print('SAMPLED IDS', sampled_buf_ids)
             sampled_batch = []
             for j in sampled_buf_ids:
                 one_buf = next(data_iter[j]) 
@@ -277,6 +299,14 @@ class PyTorchTrainContextRunner(TrainRunner):
                 # print('context runner:', sampled_batch[0][key].shape, result[key].shape )
             sampled_batch = result
             # print('context runner buff ids:', result['buffer_id'])
+            buffer_summaries = []
+            for key in [VAR_ID, TASK_ID, 'buffer_id']:
+                buffer_summaries.append(
+                    HistogramSummary(
+                        key+'_in_batch', 
+                        sampled_batch[key].cpu().detach().numpy()
+                    )
+                )
 
             if not self._no_context:
                 task_ids, variation_ids = sampled_batch[TASK_ID], sampled_batch[VAR_ID]
@@ -297,6 +327,9 @@ class PyTorchTrainContextRunner(TrainRunner):
             t = time.time()
             self._step(i, batch, sampled_buf_ids)
             step_time = time.time() - t
+            
+            if i % 50 == 0: # log those histograms more freq. 
+                self._writer.add_summaries(i, buffer_summaries )
 
             if (not self._no_context) and (not self._one_hot) and (i % self._context_cfg.update_freq == 0):
                 for _ in range(self._context_cfg.num_update_itrs): 
@@ -308,6 +341,8 @@ class PyTorchTrainContextRunner(TrainRunner):
                     if context_step % self._log_freq == 0:
                         agent_summaries = self._agent.update_summaries() # should be context losses
                         self._writer.log_context_only(context_step, agent_summaries)
+
+                
 
             if log_iteration and self._writer is not None:
                 replay_ratio = get_replay_ratio()

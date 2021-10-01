@@ -75,6 +75,10 @@ class LogWriter(object):
                 if isinstance(summary, ScalarSummary):
                     self.add_scalar(i, summary.name, summary.value)
                     wandb_log.update( {summary.name: summary.value} )
+                
+                elif isinstance(summary, HistogramSummary): 
+                    if '_in_batch' in summary.name: # other gradient stuff are skipped 
+                        wandb_log.update( {summary.name: wandb.Histogram(summary.value)} )
 
                 elif isinstance(summary, ImageSummary):
                     v = (summary.value if summary.value.ndim == 3 else

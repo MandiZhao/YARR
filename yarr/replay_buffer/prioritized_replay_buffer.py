@@ -193,6 +193,10 @@ class PrioritizedReplayBuffer(UniformReplayBuffer):
             priority_batch[i] = self._sum_tree.get(memory_index)
         return priority_batch
 
+    def get_average_priority(self):
+        return self._sum_tree._total_priority() / max(self._add_count, 1) 
+
+
     def get_transition_elements(self, batch_size=None):
         """Returns a 'type signature' for sample_transition_batch.
 

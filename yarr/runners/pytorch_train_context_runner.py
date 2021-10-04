@@ -84,7 +84,7 @@ class PyTorchTrainContextRunner(TrainRunner):
         self._num_total_buffers = len(self._wrapped_buffer)
         self._buffers_per_batch = buffers_per_batch if buffers_per_batch > 0 else self._num_total_buffers
         self._buffer_sample_rates = [1.0 / self._num_total_buffers for _ in range(len(wrapped_replay_buffer))]
-        self._per_buffer_error = [100 for  _ in range(len(wrapped_replay_buffer))]
+        self._per_buffer_error = [1.0 for  _ in range(len(wrapped_replay_buffer))]
         self._update_buffer_prio = update_buffer_prio
         logging.info(f'Created a list of prioties for {self._num_total_buffers} buffers, each batch samples from {self._buffers_per_batch} of them, \
             Updating priorities for choosing buffers? **{self._update_buffer_prio}**')
@@ -152,10 +152,20 @@ class PyTorchTrainContextRunner(TrainRunner):
                 indices_.cpu().detach().numpy(), 
                 priority_.cpu().detach().numpy())
             
-            if len(buffer_ids) > 0 and  self._update_buffer_prio:
-                buffer_prio = torch.masked_select(buff_priority, buf_mask) 
-                assert torch.all(buffer_prio[0] == buffer_prio)
-                self._per_buffer_error[buf_id] = buffer_prio[0].cpu().detach().item()
+            if len(buffer_ids) >= 1 and self._update_buffer_prio:
+                # buffer_prio = torch.masked_select(buff_priority, buf_mask) 
+                # assert torch.all(buffer_prio[0] == buffer_prio)
+                # print(f'Setting error from {self._per_buffer_error[buf_id]} to \
+                #     {buffer_prio[0].cpu().detach().item()} ')
+                # alpha = 0.7
+                # if buf_id == 0:
+                #     self._per_buffer_error[buf_id] = 5
+                # else:
+                self._per_buffer_error[buf_id] = self._wrapped_buffer[buf_id].replay_buffer.get_average_priority()  
+                # self._per_buffer_error[buf_id] = (1 - alpha) * self._per_buffer_error[buf_id] + alpha * buffer_prio[0].cpu().detach().item()
+        
+        # if i % 20 == 0:
+        #     print(f'Buffer prio avg: {[self._wrapped_buffer[buf_id].replay_buffer.get_average_priority() for buf_id in range(10)]}')
 
         if self._update_buffer_prio:
             sum_error = sum(self._per_buffer_error)
@@ -258,6 +268,7 @@ class PyTorchTrainContextRunner(TrainRunner):
                 replay_ratio = size_used / (size_added + 1e-6)
                 return replay_ratio
 
+            ### comment out for running w/o env runner
             if self._target_replay_ratio is not None:
                 # wait for env_runner collecting enough samples
                 while True:
@@ -302,9 +313,7 @@ class PyTorchTrainContextRunner(TrainRunner):
             buffer_summaries = []
             for key in [VAR_ID, TASK_ID, 'buffer_id']:
                 buffer_summaries.append(
-                    HistogramSummary(
-                        key+'_in_batch', 
-                        sampled_batch[key].cpu().detach().numpy()
+                    HistogramSummary(key+'_in_batch', sampled_batch[key].cpu().detach().numpy()
                     )
                 )
 
@@ -339,7 +348,6 @@ class PyTorchTrainContextRunner(TrainRunner):
                         agent_summaries = self._agent.update_summaries() # should be context losses
                         self._writer.log_context_only(context_step, agent_summaries)
 
-                
 
             if log_iteration and self._writer is not None:
                 replay_ratio = get_replay_ratio()

@@ -201,11 +201,12 @@ class MultiTaskRLBenchEnv(MultiTaskEnv):
         self._task = self._rlbench_env.get_task(task)
         if len(self._use_variations) > 0:
             _var = int(np.random.choice(self._use_variations))
-            assert self._task._variation_number in self._use_variations, f'This Env should not be sampling other variations than {self._use_variations} '
-        
         else:
             _var = int(np.random.choice(self._task.variation_count()))
         self._task.set_variation(_var)
+        if len(self._use_variations) > 0:
+            assert self._task._variation_number in self._use_variations, f'This Env should not be sampling other variations than {self._use_variations} '
+        
         # if not self._single_variation:
         #     self._task.sample_variation()
         # else:

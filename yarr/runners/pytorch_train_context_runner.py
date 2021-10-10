@@ -32,6 +32,7 @@ from omegaconf import DictConfig
 
 from arm.c2farm.context_agent import CONTEXT_KEY # the key context agent looks for in replay samples
 from functools import partial 
+from einops import rearrange
 
 NUM_WEIGHTS_TO_KEEP = 10
 TASK_ID='task_id'
@@ -46,8 +47,7 @@ class PyTorchTrainContextRunner(TrainRunner):
                  env_runner: EnvRunner,
                  wrapped_replay_buffer: Union[
                      PyTorchReplayBuffer, List[PyTorchReplayBuffer]],
-                 train_device: torch.device,
-                 replay_buffer_sample_rates: List[float] = None,
+                 train_device: torch.device, 
                  stat_accumulator: Union[StatAccumulator, None] = None,
                  iterations: int = int(1e6),
                  logdir: str = '/tmp/yarr/logs',
@@ -68,8 +68,7 @@ class PyTorchTrainContextRunner(TrainRunner):
                  one_hot: bool = False,
                  num_vars: int = 20,
                  update_buffer_prio: bool = True, 
-                #  ctxt_train_loader = None,
-                #  ctxt_val_loader = None,
+                 offline: bool = False, # i.e. no env runner 
                  ):
         super(PyTorchTrainContextRunner, self).__init__(
             agent, env_runner, wrapped_replay_buffer,
@@ -122,6 +121,9 @@ class PyTorchTrainContextRunner(TrainRunner):
         self.ctxt_val_iter = iter(val_demo_dataset) if val_demo_dataset is not None else None
         self._one_hot = one_hot
         self._num_vars = num_vars
+        self._offline = offline 
+        if offline:
+            logging.info('Warning! Train Runner is not spinning up any EnvRunner instances')
          
 
     def _save_model(self, i):
@@ -141,11 +143,12 @@ class PyTorchTrainContextRunner(TrainRunner):
         prio_key = 'priority' 
         priority = update_dict[prio_key] 
         buff_priority = update_dict['var_prio'] 
-        indices = sampled_batch['indices']
-        # print('context runner: returned priorities', priority)
+        indices = rearrange(sampled_batch['indices'], 'b k ... -> (b k) ... ')
+        # print('context runner: returned priorities', priority.shape)
+        sampled_buffer_ids = rearrange(sampled_batch['buffer_id'], 'b k ... -> (b k) ... ')
         new_buff_prio = []
         for buf_id in buffer_ids:
-            buf_mask = sampled_batch['buffer_id'] == buf_id 
+            buf_mask = sampled_buffer_ids == buf_id 
             indices_ = torch.masked_select(indices, buf_mask)
             priority_ = torch.masked_select(priority, buf_mask)
             self._wrapped_buffer[buf_id].replay_buffer.set_priority(
@@ -213,7 +216,8 @@ class PyTorchTrainContextRunner(TrainRunner):
         self._save_load_lock = Lock()
         
         # Kick off the environments
-        self._env_runner.start(self._save_load_lock)
+        if not self._offline:
+            self._env_runner.start(self._save_load_lock)
 
         self._agent = copy.deepcopy(self._agent)
         self._agent.build(training=True, device=self._train_device, context_device=self._context_device)
@@ -228,8 +232,7 @@ class PyTorchTrainContextRunner(TrainRunner):
                 (self._transitions_before_train, str(self._get_add_counts())))
         while (np.any(self._get_sum_add_counts() < self._transitions_before_train)):
             time.sleep(1)
-            logging.info(
-                'Waiting for %d samples before training. Currently have %s.' %
+            logging.info('Waiting for %d samples before training. Currently have %s.' %
                 (self._transitions_before_train, str(self._get_sum_add_counts())))
 
         datasets = [r.dataset() for r in self._wrapped_buffer]
@@ -260,16 +263,16 @@ class PyTorchTrainContextRunner(TrainRunner):
                 process.cpu_percent(interval=None)
 
             def get_replay_ratio():
+                if self._offline:
+                    return 0 
                 size_used = batch_times_buffers_per_sample * i
                 size_added = (
-                    self._get_sum_add_counts()
-                    - init_replay_size
+                    self._get_sum_add_counts() - init_replay_size
                 )
                 replay_ratio = size_used / (size_added + 1e-6)
                 return replay_ratio
-
-            ### comment out for running w/o env runner
-            if self._target_replay_ratio is not None:
+ 
+            if self._target_replay_ratio is not None and not self._offline:
                 # wait for env_runner collecting enough samples
                 while True:
                     replay_ratio = get_replay_ratio()
@@ -300,13 +303,23 @@ class PyTorchTrainContextRunner(TrainRunner):
             for j in sampled_buf_ids:
                 one_buf = next(data_iter[j]) 
                 one_buf['buffer_id'] = torch.tensor(
-                    [j for _ in range(self._wrapped_buffer[j].replay_buffer.batch_size) ], 
-                    dtype=torch.int64)
+                    [j for _ in range(self._wrapped_buffer[j].replay_buffer.batch_size) ], dtype=torch.int64)
+                if not self._no_context:
+                    task_ids, variation_ids = one_buf[TASK_ID], one_buf[VAR_ID]
+                    if self._one_hot:
+                        var_ids_tensor = variation_ids.clone().detach().to(torch.int64)
+                        demo_samples = F.one_hot(var_ids_tensor, num_classes=self._num_vars)
+                        one_buf[CONTEXT_KEY] = demo_samples.clone().detach().to(torch.float32) 
+                    else:
+                        demo_samples = self._train_demo_dataset.sample_for_replay(task_ids, variation_ids)
+                        one_buf[CONTEXT_KEY] = torch.stack( [ d[DEMO_KEY] for d in demo_samples ], dim=0)
+                        #print(one_buf[CONTEXT_KEY].shape) # should be (num_sample, video_len, 3, 128, 128) 
                 sampled_batch.append(one_buf)
+
             result = {}
             for key in sampled_batch[0]:
-                # result[key] = torch.stack([d[key] for d in sampled_batch], 1)
-                result[key] = torch.cat([d[key] for d in sampled_batch], 0)
+                result[key] = torch.stack([d[key] for d in sampled_batch], 0) # shape (num_buffer, num_sample, ...
+                # result[key] = torch.cat([d[key] for d in sampled_batch], 0)
                 # print('context runner:', sampled_batch[0][key].shape, result[key].shape )
             sampled_batch = result
             # print('context runner buff ids:', result['buffer_id'])
@@ -317,19 +330,20 @@ class PyTorchTrainContextRunner(TrainRunner):
                     )
                 )
 
-            if not self._no_context:
-                task_ids, variation_ids = sampled_batch[TASK_ID], sampled_batch[VAR_ID]
-                # this slows down sampling time ~6x 
-                #print('trainer trying to match ids:', task_ids, variation_ids)
-                if self._one_hot:
-                    var_ids_tensor = variation_ids.clone().detach().to(torch.int64) #torch.tensor(variation_ids, dtype=torch.int64) 
-                    demo_samples = F.one_hot(var_ids_tensor, num_classes=self._num_vars)
-                    sampled_batch[CONTEXT_KEY] = demo_samples.clone().detach().to(torch.float32) 
-                else:
-                    demo_samples = self._train_demo_dataset.sample_for_replay(task_ids, variation_ids)
-                    sampled_batch[CONTEXT_KEY] = torch.stack(
-                        [ d[DEMO_KEY][None] for d in demo_samples ])
-                # print(sampled_batch[CONTEXT_KEY].shape) # (bsize, 1, video_len, 3, 128, 128) 
+            # if not self._no_context:
+            #     task_ids, variation_ids = sampled_batch[TASK_ID], sampled_batch[VAR_ID]
+            #     # this slows down sampling time ~6x 
+            #     #print('trainer trying to match ids:', task_ids, variation_ids)
+            #     if self._one_hot:
+            #         var_ids_tensor = variation_ids.clone().detach().to(torch.int64) #torch.tensor(variation_ids, dtype=torch.int64) 
+            #         demo_samples = F.one_hot(var_ids_tensor, num_classes=self._num_vars)
+            #         sampled_batch[CONTEXT_KEY] = demo_samples.clone().detach().to(torch.float32) 
+            #     else:
+            #         demo_samples = self._train_demo_dataset.sample_for_replay(task_ids, variation_ids)
+            #         sampled_batch[CONTEXT_KEY] = torch.stack(
+            #             [ d[DEMO_KEY][None] for d in demo_samples ])
+            #     # print(sampled_batch[CONTEXT_KEY].shape) # (bsize, 1, video_len, 3, 128, 128) 
+            
             sample_time = time.time() - t
 
             batch = {k: v.to(self._train_device) for k, v in sampled_batch.items()}
@@ -338,12 +352,13 @@ class PyTorchTrainContextRunner(TrainRunner):
             step_time = time.time() - t
              
             if (not self._no_context) and (not self._one_hot) and (i % self._context_cfg.update_freq == 0):
+                if context_step % self._context_cfg.val_freq == 0:
+                        self.validate_context(context_step)
                 for _ in range(self._context_cfg.num_update_itrs): 
                     context_batch = next(self.ctxt_train_iter)
                     context_update_dict = self._agent.update_context(i, context_batch)
                     context_step += 1
-                    if context_step % self._context_cfg.val_freq == 0:
-                        self.validate_context(context_step)
+                    
                     if context_step % self._log_freq == 0:
                         agent_summaries = self._agent.update_summaries() # should be context losses
                         self._writer.log_context_only(context_step, agent_summaries)

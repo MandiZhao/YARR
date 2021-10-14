@@ -104,6 +104,7 @@ class PrioritizedReplayBuffer(UniformReplayBuffer):
         """
         # Sample stratified indices. Some of them might be invalid.
         indices = self._sum_tree.stratified_sample(batch_size)
+        # print('replay buffer sampling:', indices)
         allowed_attempts = self._max_sample_attempts
         for i in range(len(indices)):
             if not self.is_valid_transition(indices[i]):
@@ -167,8 +168,10 @@ class PrioritizedReplayBuffer(UniformReplayBuffer):
             [0, replay_capacity).
           priorities: float, the corresponding priorities.
         """
+        # print('Setting priorities:', indices, priorities)
         assert indices.dtype == np.int32, ('Indices must be integers, '
                                            'given: {}'.format(indices.dtype))
+        assert not np.any(np.isnan(priorities)), 'Got dtype NaN in incomiong priority values'                   
         for index, priority in zip(indices, priorities):
             self._sum_tree.set(index, priority)
 
@@ -196,6 +199,8 @@ class PrioritizedReplayBuffer(UniformReplayBuffer):
     def get_average_priority(self):
         return self._sum_tree._total_priority() / max(self._add_count, 1) 
 
+    def get_max_priority(self):
+      return self._sum_tree.max_recorded_priority
 
     def get_transition_elements(self, batch_size=None):
         """Returns a 'type signature' for sample_transition_batch.

@@ -92,7 +92,7 @@ class _EnvRunner(object):
     
     def spinup_train_and_eval(self, n_train, n_eval, name='env'):
         ps = []
-        
+        i = 0
         for i in range(n_train):
             n = 'train_' + name + str(i)
             self._p_args[n] = (n, False, i)

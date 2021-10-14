@@ -21,6 +21,10 @@ from yarr.utils.stat_accumulator import StatAccumulator
 
 import torch 
 from copy import deepcopy 
+TASK_ID='task_id'
+VAR_ID='variation_id'
+WAIT_TIME=300 # original version was 600 -> 5min
+
 class EnvRunner(object):
 
     def __init__(self,
@@ -38,9 +42,9 @@ class EnvRunner(object):
                  weightsdir: str = None,
                  max_fails: int = 5,
                  device_list: Union[List[int], None] = None,
-                 share_buffer_across_tasks: bool = True,
-                 buffer_key: str = 'variation_id',
-                 var_to_replay_idx: dict = {},
+                 share_buffer_across_tasks: bool = True, 
+                 task_var_to_replay_idx: dict = {},
+                 eval_only: bool = False, 
                  ):
         self._train_env = train_env
         self._eval_env = eval_env if eval_env else train_env
@@ -71,10 +75,13 @@ class EnvRunner(object):
         self.current_replay_ratio = Value('f', -1) 
         
         self._device_list = device_list 
-        self._share_buffer_across_tasks = share_buffer_across_tasks
-        self._buffer_key = buffer_key
+        self._share_buffer_across_tasks = share_buffer_across_tasks 
         self._agent_summaries = []
-        self.var_to_replay_idx = var_to_replay_idx
+        self.task_var_to_replay_idx = task_var_to_replay_idx
+        self._eval_only = eval_only
+        if eval_only:
+            logging.info('Warning! Eval only, set number of training env to 0')
+            self._train_envs = 0
 
     @property   
     def device_list(self):
@@ -110,10 +117,13 @@ class EnvRunner(object):
                 if add_to_buffer:
                     kwargs = dict(transition.observation)
                     kwargs.update(transition.info)
-                    assert self._buffer_key in transition.info.keys(), \
-                        f'Need to look for **{self._buffer_key}** in replay transition to know which buffer to add it to'
-                    replay_index = self.var_to_replay_idx.get(
-                        transition.info[self._buffer_key], 0)
+                    # assert self._buffer_key in transition.info.keys(), \
+                    #     f'Need to look for **{self._buffer_key}** in replay transition to know which buffer to add it to'
+                    # replay_index = self.task_var_to_replay_idx.get(
+                    #     transition.info[self._buffer_key], 0)
+                    task_id = transition.info.get(TASK_ID, 0)
+                    var_id = transition.info.get(VAR_ID, 0) 
+                    replay_index = self.task_var_to_replay_idx[task_id][var_id]
                     if self._share_buffer_across_tasks:
                         replay_index = 0
                     rb = self._eval_replay_buffer[replay_index] if eval else self._train_replay_buffer[replay_index]
@@ -171,10 +181,11 @@ class EnvRunner(object):
                         no_transitions[p.name] += 1
                     else:
                         no_transitions[p.name] = 0
-                    if no_transitions[p.name] > 600:  # 5min
+                    if no_transitions[p.name] > WAIT_TIME:  # 5min
                         logging.warning("Env %s hangs, so restarting" % p.name)
                         envs.remove(p)
                         os.kill(p.pid, signal.SIGTERM)
+                        torch.cuda.empty_cache()
                         p = self._internal_env_runner.restart_process(p.name)
                         envs.append(p)
                         no_transitions[p.name] = 0

@@ -93,19 +93,25 @@ class _EnvRunner(object):
     def spinup_train_and_eval(self, n_train, n_eval, name='env'):
         ps = []
         i = 0
+        num_cpus = os.cpu_count()
+        print(f"Found {num_cpus} cpus, limiting:")
+        per_proc = int(num_cpus / (n_train+n_eval))
         for i in range(n_train):
             n = 'train_' + name + str(i)
             self._p_args[n] = (n, False, i)
             self.p_failures[n] = 0
             p = Process(target=self._run_env, args=self._p_args[n], name=n)
             p.start() 
+            print(os.system(f"taskset -cp {int(i * per_proc)},{int( (i+1) * per_proc )} {p.pid}" ))
             ps.append(p)
-        for j in range(i, i + n_eval):
+        
+        for j in range(n_train, n_train + n_eval):
             n = 'eval_' + name + str(j)
             self._p_args[n] = (n, True, j)
             self.p_failures[n] = 0
             p = Process(target=self._run_env, args=self._p_args[n], name=n)
             p.start()
+            print(os.system(f"taskset -cp {int(j * per_proc)},{int( (j+1) * per_proc )} {p.pid}" ))
             ps.append(p)
         return ps
 
@@ -141,7 +147,7 @@ class _EnvRunner(object):
         return x.dtype
 
     def _run_env(self, name: str, eval: bool, proc_idx: int):
-
+        
         self._name = name
 
         self._agent = copy.deepcopy(self._agent)
@@ -184,11 +190,14 @@ class _EnvRunner(object):
                             (self._current_replay_ratio.value, self._target_replay_ratio))
 
                     with self.write_lock:
+                        # logging.warning(f'proc {name}, idx {proc_idx} writing agent summaries')
                         if len(self.agent_summaries) == 0:
                             # Only store new summaries if the previous ones
                             # have been popped by the main env runner.
                             for s in self._agent.act_summaries():
                                 self.agent_summaries.append(s)
+                        # logging.warning(f'proc {name}, idx {proc_idx} finished writing agent summaries')
+                    
                     episode_rollout.append(replay_transition)
             except StopIteration as e:
                 continue
@@ -196,9 +205,11 @@ class _EnvRunner(object):
                 env.shutdown()
                 raise e
 
-            with self.write_lock:
+            with self.write_lock: 
+                # logging.warning(f'proc {name}, idx {proc_idx} adding to stored transitions')
                 for transition in episode_rollout:
                     self.stored_transitions.append((name, transition, eval))
+                # logging.warning(f'proc {name}, idx {proc_idx} finished adding to stored transitions') 
         env.shutdown()
 
     def kill(self):

@@ -6,8 +6,8 @@ import signal
 import sys
 import threading
 import time
-from torch.multiprocessing import Lock, cpu_count
-# from multiprocessing import Lock, cpu_count
+# from torch.multiprocessing import Lock, cpu_count
+from multiprocessing import Lock, cpu_count
 from typing import Optional, List
 from typing import Union
 
@@ -26,8 +26,7 @@ from yarr.agents.agent import ScalarSummary, HistogramSummary, ImageSummary, \
     VideoSummary
 
 from arm.demo_dataset import MultiTaskDemoSampler, RLBenchDemoDataset, collate_by_id
-from arm.models.slowfast  import TempResNet
-from torch.utils.data import DataLoader
+from arm.models.slowfast  import TempResNet 
 from omegaconf import DictConfig
 
 from arm.c2farm.context_agent import CONTEXT_KEY # the key context agent looks for in replay samples
@@ -154,6 +153,7 @@ class PyTorchTrainContextRunner(TrainRunner):
             # NOTE: WITH replacement for now 
             # np.random.choice(range(len(datasets)), self._buffers_per_batch, replace=False)
             # print('SAMPLED IDS', sampled_buf_ids)
+ 
         sampled_batch = []
         for j in sampled_buf_ids:
             one_buf = next(data_iter[j]) 
@@ -166,7 +166,9 @@ class PyTorchTrainContextRunner(TrainRunner):
                     demo_samples = F.one_hot(var_ids_tensor, num_classes=self._num_vars)
                     one_buf[CONTEXT_KEY] = demo_samples.clone().detach().to(torch.float32) 
                 else:
-                    demo_samples = self._train_demo_dataset.sample_for_replay(task_ids, variation_ids)
+                    demo_samples = self._train_demo_dataset.sample_for_replay(task_ids, variation_ids) # -> this matches every single variation to a context video (B,K,...) -> (B,N,T,3,128,128)
+                    #TODO(1014): change here to no match so all K samples now use the same context embedding 
+                    # demo_samples =  
                     one_buf[CONTEXT_KEY] = torch.stack( [ d[DEMO_KEY] for d in demo_samples ], dim=0)
                     #print(one_buf[CONTEXT_KEY].shape) # should be (num_sample, video_len, 3, 128, 128) 
             sampled_batch.append(one_buf)
@@ -207,15 +209,7 @@ class PyTorchTrainContextRunner(TrainRunner):
                 indices_.cpu().detach().numpy(), 
                 priority_)
             
-            if len(buffer_ids) >= 1 and self._update_buffer_prio:
-                # buffer_prio = torch.masked_select(buff_priority, buf_mask) 
-                # assert torch.all(buffer_prio[0] == buffer_prio)
-                # print(f'Setting error from {self._per_buffer_error[buf_id]} to \
-                #     {buffer_prio[0].cpu().detach().item()} ')
-                # alpha = 0.7
-                # if buf_id == 0:
-                #     self._per_buffer_error[buf_id] = 5
-                # else:
+            if len(buffer_ids) >= 1 and self._update_buffer_prio: 
                 self._per_buffer_error[buf_id] = self._wrapped_buffer[buf_id].replay_buffer.get_average_priority()  
                 # self._per_buffer_error[buf_id] = (1 - alpha) * self._per_buffer_error[buf_id] + alpha * buffer_prio[0].cpu().detach().item()
         

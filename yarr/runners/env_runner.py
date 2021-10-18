@@ -107,6 +107,7 @@ class EnvRunner(object):
         # Move the stored transitions to the replay and accumulate statistics.
         new_transitions = collections.defaultdict(int)
         with self._internal_env_runner.write_lock:
+            # logging.info('EnvRunner calling internal runner write lock')
             self._agent_summaries = list(
                 self._internal_env_runner.agent_summaries)
             if self._step_signal.value % self.log_freq == 0 and self._step_signal.value > 0:
@@ -142,6 +143,8 @@ class EnvRunner(object):
                 if self._stat_accumulator is not None:
                     self._stat_accumulator.step(transition, eval)
             self._internal_env_runner.stored_transitions[:] = []  # Clear list
+            # logging.info('Finished EnvRunner calling internal runner write lock')
+
         return new_transitions
 
     def _run(self, save_load_lock):
@@ -183,6 +186,10 @@ class EnvRunner(object):
                         no_transitions[p.name] = 0
                     if no_transitions[p.name] > WAIT_TIME:  # 5min
                         logging.warning("Env %s hangs, so restarting" % p.name)
+                        print('process id:', p.pid)
+                        print('process is alive?', p.is_alive())
+                        print(os.system('taskset -p %s'%p.pid))
+
                         envs.remove(p)
                         os.kill(p.pid, signal.SIGTERM)
                         torch.cuda.empty_cache()
@@ -196,8 +203,7 @@ class EnvRunner(object):
 
     def start(self, save_load_lock):
         self._p = Thread(target=self._run, args=(save_load_lock,), daemon=True)
-        self._p.name = 'EnvRunnerThread' 
-        
+        self._p.name = 'EnvRunnerThread'  
         self._p.start()
 
     def wait(self):

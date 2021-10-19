@@ -37,7 +37,7 @@ NUM_WEIGHTS_TO_KEEP = 10
 TASK_ID='task_id'
 VAR_ID='variation_id'
 DEMO_KEY='front_rgb' # what to look for in the demo dataset
-
+WAIT_WARN=100
 
 class PyTorchTrainContextRunner(TrainRunner):
 
@@ -69,6 +69,8 @@ class PyTorchTrainContextRunner(TrainRunner):
                  update_buffer_prio: bool = True, 
                  offline: bool = False, # i.e. no env runner 
                  eval_only: bool = False, # no agent update
+                 task_var_to_replay_idx: dict = {},
+                 switch_online_tasks: int = -1 # if > 0: try setting the env runner to focus on only this many tasks
                  ):
         super(PyTorchTrainContextRunner, self).__init__(
             agent, env_runner, wrapped_replay_buffer,
@@ -112,7 +114,7 @@ class PyTorchTrainContextRunner(TrainRunner):
 
         self._no_context = no_context
         if no_context:
-            logging.info('Warning! TrainRunner is not sampling/updating context')
+            logging.warning('TrainRunner is not sampling/updating context')
         self._context_cfg = context_cfg
         self._train_demo_dataset = train_demo_dataset
         self._val_demo_dataset = val_demo_dataset
@@ -123,10 +125,18 @@ class PyTorchTrainContextRunner(TrainRunner):
         self._num_vars = num_vars
         self._offline = offline 
         if offline:
-            logging.info('Warning! Train Runner is not spinning up any EnvRunner instances')
+            logging.warning('Train Runner is not spinning up any EnvRunner instances')
         self._eval_only = eval_only
         if eval_only:
-            logging.info('Warning! Only EnvRunner is spinning, no agent update happening')
+            logging.warning('Only EnvRunner is spinning, no agent update happening')
+
+        self.switch_online_tasks = switch_online_tasks
+        self.task_var_to_replay_idx = task_var_to_replay_idx
+        self.online_task_ids = [int(k) for k in task_var_to_replay_idx.keys()]
+        if switch_online_tasks > 0:
+            assert switch_online_tasks <= len(self.online_task_ids), f"Cannot select more tasks than avaliable"
+            logging.warning(f'Environment runner priority-selects {switch_online_tasks} tasks from a total of {len(self.online_task_ids)} to run')
+
          
 
     def _save_model(self, i):
@@ -193,7 +203,8 @@ class PyTorchTrainContextRunner(TrainRunner):
         # new version: use mask select
         prio_key = 'priority' 
         priority = update_dict[prio_key] 
-        buff_priority = update_dict['var_prio'] 
+        # task_prio = update_dict['task_prio'] 
+        # buff_priority = update_dict['var_prio'] 
         indices = rearrange(sampled_batch['indices'], 'b k ... -> (b k) ... ')
         # print('context runner: returned priorities', priority.shape)
         sampled_buffer_ids = rearrange(sampled_batch['buffer_id'], 'b k ... -> (b k) ... ')
@@ -221,6 +232,22 @@ class PyTorchTrainContextRunner(TrainRunner):
             self._buffer_sample_rates = [ e/sum_error for e in self._per_buffer_error]
             # print('updated buffer sample rates:', self._buffer_sample_rates) 
 
+        if self.switch_online_tasks > 0:
+            per_task_errors = dict()
+            for task_id, v in self.task_var_to_replay_idx.items():
+                per_task_errors[task_id] = np.mean([
+                    self._per_buffer_error[buff_idx] for var_id, buff_idx in v.items()])
+            # task_high_to_low = [pair[0] for pair in sorted(per_task_errors.items(), key=lambda item: -item[1])] 
+            per_task_errors = sorted(per_task_errors.items(), key=lambda item: item[0]) # list of pairs: [ (task_id, error), ... ]
+            sum_error = sum([pair[1] for pair in per_task_errors])
+            task_sample_rates = [ e/sum_error for e in [pair[1] for pair in per_task_errors]]
+
+            self.online_task_ids = np.random.choice(
+                a=range(len(per_task_errors)), 
+                size=self.switch_online_tasks,
+                replace=False, 
+                p=task_sample_rates
+            )
         # prio_key = 'priority' 
         # priority = update_dict[prio_key].cpu().detach().numpy() if isinstance(update_dict[prio_key], torch.Tensor) \
         #     else np.numpy(update_dict[prio_key])
@@ -251,20 +278,19 @@ class PyTorchTrainContextRunner(TrainRunner):
         return np.array([
             r.replay_buffer.add_count for r in self._wrapped_buffer])
 
-    def _get_sum_add_counts(self):
-        return sum([
+    def _get_sum_add_counts(self, avg=False):
+        sums = sum([
             r.replay_buffer.add_count for r in self._wrapped_buffer])
+        # print('current add sums for all buffer: ', sums)
+        if avg:
+            return np.mean(sums)
+        return sums 
 
     def start(self, resume_dir: str = None):
 
         signal.signal(signal.SIGINT, self._signal_handler)
 
-        self._save_load_lock = Lock()
-        
-        # Kick off the environments
-        if not self._offline:
-            self._env_runner.start(self._save_load_lock)
-
+        self._save_load_lock = Lock() 
         self._agent = copy.deepcopy(self._agent)
         self._agent.build(training=True, device=self._train_device, context_device=self._context_device)
         if resume_dir is not None:
@@ -275,19 +301,30 @@ class PyTorchTrainContextRunner(TrainRunner):
         if self._weightsdir is not None:
             self._save_model(0)  # Save weights so workers can load.
 
-        logging.info('Need %d samples before training. Currently have %s.' %
-                (self._transitions_before_train, str(self._get_add_counts())))
+        # init_replay_size = self._get_sum_add_counts().astype(float)
+        # NOTE(1018): with multiple buffers this intial size was summed to really large, so the env runner struggled to catch up 
+        init_replay_size = np.mean(self._get_add_counts()).astype(float) # try setting this to average across buffers
+
+        logging.info('Need %d samples before training. Currently have %s in each buffer, which adds to %d in total, setting init_replay_size to: %s' %
+                (self._transitions_before_train, str(self._get_add_counts()), self._get_sum_add_counts(), init_replay_size)     )
+        
+        # Kick off the environments
+        if not self._offline:
+            self._env_runner.start(self._save_load_lock)
         if not self._eval_only:
-            while (np.any(self._get_sum_add_counts() < self._transitions_before_train)):
+            while (self._get_sum_add_counts() < self._transitions_before_train):
                 time.sleep(1)
-                logging.info('Waiting for %d samples before training. Currently have %s.' %
+                logging.info('Waiting for %d total samples before training. Currently have %s.' %
                     (self._transitions_before_train, str(self._get_sum_add_counts())))
 
         datasets = [r.dataset() for r in self._wrapped_buffer]
+        single_buffer_bsize = self._wrapped_buffer[0].replay_buffer.batch_size
+        assert np.all(
+            np.equal([r.replay_buffer.batch_size for r in self._wrapped_buffer], single_buffer_bsize)), 'The replay buffers should all have the same bath size'
         data_iter = [iter(d) for d in datasets] 
          
-        init_replay_size = self._get_sum_add_counts().astype(float)
-        batch_times_buffers_per_sample = sum([r.replay_buffer.batch_size for r in self._wrapped_buffer[:self._buffers_per_batch]])
+        
+        batch_times_buffers_per_sample = int(single_buffer_bsize  * self._buffers_per_batch )
         process = psutil.Process(os.getpid())
         num_cpu = psutil.cpu_count()
 
@@ -314,26 +351,32 @@ class PyTorchTrainContextRunner(TrainRunner):
                 if self._offline or self._eval_only:
                     return 0 
                 size_used = batch_times_buffers_per_sample * i
+                # size_used = single_buffer_bsize * i
                 size_added = (
-                    self._get_sum_add_counts() - init_replay_size
+                    self._get_sum_add_counts(avg=True) - init_replay_size
                 )
                 replay_ratio = size_used / (size_added + 1e-6)
                 return replay_ratio
  
             if self._target_replay_ratio is not None and not self._offline:
                 # wait for env_runner collecting enough samples
-                while True:
+                slept = 0
+                while True: 
                     replay_ratio = get_replay_ratio()
                     self._env_runner.current_replay_ratio.value = replay_ratio
                     if replay_ratio < self._target_replay_ratio:
                         break
                     time.sleep(1)
-                    logging.debug(
-                        'Waiting for replay_ratio %f to be less than %f.' %
-                        (replay_ratio, self._target_replay_ratio))
+                    slept += 1
+                    if slept % WAIT_WARN == 0:
+                        logging.warning('Step %d : Train Runner have been waiting for replay_ratio %f to be less than %f for %s seconds.' %
+                            (i, replay_ratio, self._target_replay_ratio, slept)
+                            ) 
                 del replay_ratio
 
             t = time.time() 
+            if self.switch_online_tasks > 0: # select online tasks! 
+                self._env_runner.online_task_ids[:] = self.online_task_ids
             
             sample_time, step_time = 0, 0
             buffer_summaries = [] 
@@ -365,17 +408,20 @@ class PyTorchTrainContextRunner(TrainRunner):
                 if not self._eval_only:
                     agent_summaries = self._agent.update_summaries()
                 env_summaries = self._env_runner.summaries()
+                if self.switch_online_tasks > 0: 
+                    env_summaries += [HistogramSummary('online task ids', self.online_task_ids)]
                 self._writer.add_summaries(i, agent_summaries + env_summaries + buffer_summaries)
 
-                for r_i, wrapped_buffer in enumerate(self._wrapped_buffer):
-                    self._writer.add_scalar(
-                        i, 'replay%d/add_count' % r_i,
-                        wrapped_buffer.replay_buffer.add_count)
-                    self._writer.add_scalar(
-                        i, 'replay%d/size' % r_i,
-                        wrapped_buffer.replay_buffer.replay_capacity
-                        if wrapped_buffer.replay_buffer.is_full()
-                        else wrapped_buffer.replay_buffer.add_count)
+                # DEBUG! disable all buffer logging 
+                # for r_i, wrapped_buffer in enumerate(self._wrapped_buffer):
+                #     self._writer.add_scalar(
+                #         i, 'replay%d/add_count' % r_i,
+                #         wrapped_buffer.replay_buffer.add_count)
+                #     self._writer.add_scalar(
+                #         i, 'replay%d/size' % r_i,
+                #         wrapped_buffer.replay_buffer.replay_capacity
+                #         if wrapped_buffer.replay_buffer.is_full()
+                #         else wrapped_buffer.replay_buffer.add_count)
 
                 self._writer.add_scalar(
                     i, 'replay/replay_ratio', replay_ratio)

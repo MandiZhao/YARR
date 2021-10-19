@@ -22,6 +22,7 @@ except RuntimeError:
     pass
 
 import torch 
+WAIT_WARN=500
 
 class _EnvRunner(object):
 
@@ -40,8 +41,9 @@ class _EnvRunner(object):
                  save_load_lock,
                  current_replay_ratio,
                  target_replay_ratio,
+                 online_task_ids, # limit the task options for env runner 
                  weightsdir: str = None,
-                 device_list: List[int] = None,
+                 device_list: List[int] = None, 
                  ):
         self._train_env = train_env
         self._eval_env = eval_env
@@ -67,6 +69,7 @@ class _EnvRunner(object):
         self._save_load_lock = save_load_lock
         self._current_replay_ratio = current_replay_ratio
         self._target_replay_ratio = target_replay_ratio
+        self.online_task_ids = online_task_ids 
 
         self._device_list, self._num_device = (None, 1) if device_list is None else (
             [torch.device("cuda:%d" % int(idx)) for idx in device_list], len(device_list))
@@ -93,16 +96,16 @@ class _EnvRunner(object):
     def spinup_train_and_eval(self, n_train, n_eval, name='env'):
         ps = []
         i = 0
-        num_cpus = os.cpu_count()
-        print(f"Found {num_cpus} cpus, limiting:")
-        per_proc = int(num_cpus / (n_train+n_eval))
+        # num_cpus = os.cpu_count()
+        # print(f"Found {num_cpus} cpus, limiting:")
+        # per_proc = int(num_cpus / (n_train+n_eval))
         for i in range(n_train):
             n = 'train_' + name + str(i)
             self._p_args[n] = (n, False, i)
             self.p_failures[n] = 0
             p = Process(target=self._run_env, args=self._p_args[n], name=n)
             p.start() 
-            print(os.system(f"taskset -cp {int(i * per_proc)},{int( (i+1) * per_proc )} {p.pid}" ))
+            # print(os.system(f"taskset -cp {int(i * per_proc)}-{int( (i+1) * per_proc )} {p.pid}" ))
             ps.append(p)
         
         for j in range(n_train, n_train + n_eval):
@@ -111,7 +114,7 @@ class _EnvRunner(object):
             self.p_failures[n] = 0
             p = Process(target=self._run_env, args=self._p_args[n], name=n)
             p.start()
-            print(os.system(f"taskset -cp {int(j * per_proc)},{int( (j+1) * per_proc )} {p.pid}" ))
+            # print(os.system(f"taskset -cp {int(j * per_proc)}-{min(num_cpus-1, int( (j+1) * per_proc )) } {p.pid}" ))
             ps.append(p)
         return ps
 
@@ -169,25 +172,36 @@ class _EnvRunner(object):
         for ep in range(self._episodes):
             self._load_save()
             logging.debug('%s: Starting episode %d.' % (name, ep))
+            if not eval and len(self.online_task_ids) > 0:
+                # print(f"env runner setting online tasks: {self.online_task_ids}")
+                env.set_avaliable_tasks(self.online_task_ids) 
             episode_rollout = []
             generator = self._rollout_generator.generator(
                 self._step_signal, env, self._agent,
                 self._episode_length, self._timesteps, eval)
             try:
                 for replay_transition in generator:
+                    slept = 0
                     while True:
                         if self._kill_signal.value:
                             env.shutdown()
-                            return
+                            return 
                         if (eval or self._target_replay_ratio is None or
                                 self._step_signal.value <= 0 or (
                                         self._current_replay_ratio.value >
                                         self._target_replay_ratio)):
                             break
                         time.sleep(1)
-                        logging.debug(
+                        slept += 1
+                        logging.info(
                             'Agent. Waiting for replay_ratio %f to be more than %f' %
                             (self._current_replay_ratio.value, self._target_replay_ratio))
+
+                        if slept % WAIT_WARN == 0:
+                            logging.warning(
+                            'Env Runner process %s have been waiting for replay_ratio %f to be more than %f for %d seconds' %
+                            (name, self._current_replay_ratio.value, self._target_replay_ratio, slept))
+                            
 
                     with self.write_lock:
                         # logging.warning(f'proc {name}, idx {proc_idx} writing agent summaries')

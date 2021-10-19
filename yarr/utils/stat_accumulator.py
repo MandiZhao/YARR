@@ -172,7 +172,9 @@ class SimpleMultiVariationAccumulator(StatAccumulator):
                  mean_only: bool = True, 
                  max_len: int = 5,
                  task_id_key: str = 'task_id',
-                 var_id_key: str = 'variation_id'):
+                 var_id_key: str = 'variation_id',
+                 log_all_vars: bool = True,
+                 ):
         self._prefix = prefix
         self._eval_video_fps = eval_video_fps
         self._mean_only = mean_only
@@ -185,6 +187,7 @@ class SimpleMultiVariationAccumulator(StatAccumulator):
         self._summaries = []
         self._transitions = {_var: 0 for _var in task_vars}
         self._task_id_key, self._var_id_key = task_id_key, var_id_key
+        self._log_all_vars = log_all_vars
 
     def _reset_data(self):
         with self._lock:
@@ -207,7 +210,9 @@ class SimpleMultiVariationAccumulator(StatAccumulator):
                 if transition.terminal:
                     self._all_var_returns[var_str].next()
                     self._all_var_lengths[var_str].next()
-                self._summaries.extend(list(transition.summaries))
+                
+                if self._log_all_vars: # otherwise, don't keep any copy of individual variation perfs.
+                    self._summaries.extend(list(transition.summaries))
 
     def _get(self, _var) -> List[Summary]:
         sums = []
@@ -253,10 +258,11 @@ class SimpleMultiVariationAccumulator(StatAccumulator):
         all_var_ret, all_var_len, all_var_trans = [], [], []
         for _var in self._task_vars:
             returns, lengths = self._all_var_returns[_var], self._all_var_lengths[_var]
-            data.append(
-                ScalarSummary(f"{self._prefix}_envs/{self._task_name}/{_var}_returns", \
-                returns.mean())
-                )
+            if self._log_all_vars:
+                data.append(
+                    ScalarSummary(f"{self._prefix}_envs/{self._task_name}/{_var}_returns", \
+                    returns.mean())
+                    )
             all_var_ret.append( returns.mean() )
             all_var_len.append( lengths.mean() )
             all_var_trans.append(self._transitions[_var])
@@ -356,22 +362,23 @@ class MultiTaskAccumulatorV2(StatAccumulator):
                  task_names: List[str],
                  tasks_vars: List[List[str]], # [ [task_A_0, task_A_1,...], [task_B_0, ...] ]
                  eval_video_fps: int = 30, 
-                 mean_only: bool = True,
+                 mean_only: bool = True, 
                  max_len: int = 5,
                  train_prefix: str = 'train',
-                 eval_prefix: str = 'eval'
+                 eval_prefix: str = 'eval', 
+                 log_all_vars: bool = True, # if False,  only logs averaged perf. across all variations of each task 
                  ):
 
         self._train_accs, self._eval_accs = [], [] 
         for i, (task_name, its_vars) in enumerate( zip(task_names, tasks_vars) ):
             self._train_accs.append(
                 SimpleMultiVariationAccumulator(
-                    train_prefix, task_name, i, its_vars, eval_video_fps, mean_only, max_len, TASK_ID, VAR_ID)
+                    train_prefix, task_name, i, its_vars, eval_video_fps, mean_only, max_len, TASK_ID, VAR_ID, log_all_vars)
             )
 
             self._eval_accs.append(
                 SimpleMultiVariationAccumulator(
-                    eval_prefix, task_name, i, its_vars, eval_video_fps, mean_only, max_len, TASK_ID, VAR_ID)
+                    eval_prefix, task_name, i, its_vars, eval_video_fps, mean_only, max_len, TASK_ID, VAR_ID, log_all_vars)
             )
           
         self._train_accs_mean = _SimpleAccumulator(

@@ -3,7 +3,7 @@ import logging
 import os
 import signal
 import time
-from multiprocessing import Value
+from multiprocessing import Value, Manager
 from threading import Thread
 from typing import List
 from typing import Union
@@ -23,7 +23,7 @@ import torch
 from copy import deepcopy 
 TASK_ID='task_id'
 VAR_ID='variation_id'
-WAIT_TIME=300 # original version was 600 -> 5min
+WAIT_TIME=400 # original version was 600 -> 5min
 
 class EnvRunner(object):
 
@@ -73,6 +73,7 @@ class EnvRunner(object):
         self.log_freq = 1000  # Will get overridden later
         self.target_replay_ratio = None  # Will get overridden later
         self.current_replay_ratio = Value('f', -1) 
+        self.online_task_ids = Manager().list()
         
         self._device_list = device_list 
         self._share_buffer_across_tasks = share_buffer_across_tasks 
@@ -146,14 +147,16 @@ class EnvRunner(object):
             # logging.info('Finished EnvRunner calling internal runner write lock')
 
         return new_transitions
+ 
 
     def _run(self, save_load_lock):
         self._internal_env_runner = _EnvRunner(
             self._train_env, self._eval_env, self._agent, self._timesteps, self._train_envs,
             self._eval_envs, self._episodes, self._episode_length, self._kill_signal,
             self._step_signal, self._rollout_generator, save_load_lock,
-            self.current_replay_ratio, self.target_replay_ratio,
-            self._weightsdir,
+            self.current_replay_ratio, self.target_replay_ratio, 
+            weightsdir=self._weightsdir, 
+            online_task_ids=self.online_task_ids,
             device_list=(self.device_list if len(self.device_list) >= 1 else None)
             )
         #training_envs = self._internal_env_runner.spin_up_envs('train_env', self._train_envs, False)
@@ -185,17 +188,18 @@ class EnvRunner(object):
                     else:
                         no_transitions[p.name] = 0
                     if no_transitions[p.name] > WAIT_TIME:  # 5min
-                        logging.warning("Env %s hangs, so restarting" % p.name)
-                        print('process id:', p.pid)
-                        print('process is alive?', p.is_alive())
-                        print(os.system('taskset -p %s'%p.pid))
-
-                        envs.remove(p)
-                        os.kill(p.pid, signal.SIGTERM)
-                        torch.cuda.empty_cache()
-                        p = self._internal_env_runner.restart_process(p.name)
-                        envs.append(p)
-                        no_transitions[p.name] = 0
+                        if self.current_replay_ratio.value - 1 > self.target_replay_ratio:
+                            # only hangs if it Should be running, otherwise just let it sleep? 
+                            logging.warning("Env %s hangs, so restarting" % p.name)
+                            print('process id:', p.pid)
+                            print('process is alive?', p.is_alive())
+                            print('replay&target ratios:', self.current_replay_ratio.value, self.target_replay_ratio)
+                            envs.remove(p)
+                            os.kill(p.pid, signal.SIGTERM)
+                            torch.cuda.empty_cache()
+                            p = self._internal_env_runner.restart_process(p.name)
+                            envs.append(p)
+                            no_transitions[p.name] = 0
 
             if len(envs) == 0:
                 break

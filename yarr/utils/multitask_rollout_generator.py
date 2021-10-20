@@ -35,7 +35,7 @@ class RolloutGeneratorWithContext(object):
         """takes in an task_id from environment and sample some 
             demos from offline dataset"""
         assert self._demo_dataset is not None, 'Cannot sample without demo dataset pre-loaded'
-        data = self._demo_dataset.sample_one_variation(task_id, variation_id)
+        data = self._demo_dataset.sample_one_variation(task_id, variation_id)[0]
         assert task_name in data['name'], f"Expects {task_name} to be the prefix of {data['name']}"
         demo_sample = data.get(self._sample_key, None)
         assert demo_sample is not None, f"Key {self._sample_key} was not found in sampled data"

@@ -10,7 +10,7 @@ import time
 from multiprocessing import Lock, cpu_count
 from typing import Optional, List
 from typing import Union
-
+from collections import defaultdict
 import numpy as np
 import psutil
 import torch
@@ -37,7 +37,7 @@ NUM_WEIGHTS_TO_KEEP = 10
 TASK_ID='task_id'
 VAR_ID='variation_id'
 DEMO_KEY='front_rgb' # what to look for in the demo dataset
-WAIT_WARN=100
+WAIT_WARN=200
 
 class PyTorchTrainContextRunner(TrainRunner):
 
@@ -171,15 +171,18 @@ class PyTorchTrainContextRunner(TrainRunner):
                 [j for _ in range(self._wrapped_buffer[j].replay_buffer.batch_size) ], dtype=torch.int64)
             if not self._no_context:
                 task_ids, variation_ids = one_buf[TASK_ID], one_buf[VAR_ID]
+                task, var = task_ids[0], variation_ids[0]
+                assert torch.all(task_ids == task) and torch.all(variation_ids == var), f'For now, assume each buffer contains only 1 vairation from 1 task'
                 if self._one_hot:
                     var_ids_tensor = variation_ids.clone().detach().to(torch.int64)
                     demo_samples = F.one_hot(var_ids_tensor, num_classes=self._num_vars)
                     one_buf[CONTEXT_KEY] = demo_samples.clone().detach().to(torch.float32) 
                 else:
-                    demo_samples = self._train_demo_dataset.sample_for_replay(task_ids, variation_ids) # -> this matches every single variation to a context video (B,K,...) -> (B,N,T,3,128,128)
-                    #TODO(1014): change here to no match so all K samples now use the same context embedding 
-                    # demo_samples =  
+                    # demo_samples = self._train_demo_dataset.sample_for_replay(task_ids, variation_ids) # -> this matches every single variation to a context video (B,K,...) -> (B,N,T,3,128,128)
+                    #TODO(1014): change here to no match, action samples either use single or randomly sample from context samples
+                    demo_samples = self._train_demo_dataset.sample_for_replay_no_match(task, var) # draw K independent samples 
                     one_buf[CONTEXT_KEY] = torch.stack( [ d[DEMO_KEY] for d in demo_samples ], dim=0)
+                    # print(f'task {task} var {var}, context sample: ', one_buf[CONTEXT_KEY].shape)
                     #print(one_buf[CONTEXT_KEY].shape) # should be (num_sample, video_len, 3, 128, 128) 
             sampled_batch.append(one_buf)
 
@@ -189,14 +192,8 @@ class PyTorchTrainContextRunner(TrainRunner):
             # result[key] = torch.cat([d[key] for d in sampled_batch], 0)
             # print('context runner:', sampled_batch[0][key].shape, result[key].shape )
         sampled_batch = result
-        # print('context runner buff ids:', result['buffer_id'])
-        buffer_summaries = []
-        for key in [VAR_ID, TASK_ID, 'buffer_id']:
-            buffer_summaries.append(
-                HistogramSummary(key+'_in_batch', sampled_batch[key].cpu().detach().numpy()
-                )
-            )
-        return sampled_batch, sampled_buf_ids, buffer_summaries
+        
+        return sampled_batch, sampled_buf_ids 
 
     def _step(self, i, sampled_batch, buffer_ids):
         update_dict = self._agent.update(i, sampled_batch)
@@ -242,12 +239,12 @@ class PyTorchTrainContextRunner(TrainRunner):
             sum_error = sum([pair[1] for pair in per_task_errors])
             task_sample_rates = [ e/sum_error for e in [pair[1] for pair in per_task_errors]]
 
-            self.online_task_ids = np.random.choice(
+            self.online_task_ids = list(np.random.choice(
                 a=range(len(per_task_errors)), 
                 size=self.switch_online_tasks,
                 replace=False, 
                 p=task_sample_rates
-            )
+                ))
         # prio_key = 'priority' 
         # priority = update_dict[prio_key].cpu().detach().numpy() if isinstance(update_dict[prio_key], torch.Tensor) \
         #     else np.numpy(update_dict[prio_key])
@@ -339,6 +336,8 @@ class PyTorchTrainContextRunner(TrainRunner):
                 agent_summaries = self._agent._context_agent.update_summaries() # only about context losses
                 self._writer.log_context_only(context_step, agent_summaries)
 
+        buffer_summaries = defaultdict(list)
+        recent_online_task_ids = []
         for i in range(self._iterations):
             self._env_runner.set_step(i)
 
@@ -377,12 +376,23 @@ class PyTorchTrainContextRunner(TrainRunner):
             t = time.time() 
             if self.switch_online_tasks > 0: # select online tasks! 
                 self._env_runner.online_task_ids[:] = self.online_task_ids
+                recent_online_task_ids.extend(self.online_task_ids)
             
             sample_time, step_time = 0, 0
-            buffer_summaries = [] 
+            
             if not self._eval_only:
-                sampled_batch, sampled_buf_ids, buffer_summaries = self._sample_replay(data_iter) 
+                sampled_batch, sampled_buf_ids = self._sample_replay(data_iter) 
                 sample_time = time.time() - t
+                # print('context runner buff ids:', result['buffer_id'])
+ 
+                for key in [VAR_ID, TASK_ID, 'buffer_id']:
+                    # buffer_summaries.append(
+                    #     HistogramSummary(key+'_in_batch', sampled_batch[key].cpu().detach().numpy()
+                    #     )
+                    # )
+                    buffer_summaries[key].extend(
+                        list(sampled_batch[key].cpu().detach().numpy().flatten() ))
+                    # print(key, buffer_summaries[key])
                 t = time.time() 
                 self._step(i, sampled_batch, sampled_buf_ids)
                 step_time = time.time() - t
@@ -409,8 +419,15 @@ class PyTorchTrainContextRunner(TrainRunner):
                     agent_summaries = self._agent.update_summaries()
                 env_summaries = self._env_runner.summaries()
                 if self.switch_online_tasks > 0: 
-                    env_summaries += [HistogramSummary('online task ids', self.online_task_ids)]
-                self._writer.add_summaries(i, agent_summaries + env_summaries + buffer_summaries)
+                    env_summaries += [HistogramSummary('online task ids', recent_online_task_ids)] 
+                    recent_online_task_ids = []
+
+                buffer_histograms = [] 
+                if len(buffer_summaries) > 0:
+                    buffer_histograms = [
+                        HistogramSummary(key, val) for key, val in buffer_summaries.items()]
+                    buffer_summaries = defaultdict(list) # clear 
+                self._writer.add_summaries(i, agent_summaries + env_summaries + buffer_histograms)
 
                 # DEBUG! disable all buffer logging 
                 # for r_i, wrapped_buffer in enumerate(self._wrapped_buffer):

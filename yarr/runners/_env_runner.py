@@ -22,7 +22,7 @@ except RuntimeError:
     pass
 
 import torch 
-WAIT_WARN=500
+WAIT_WARN=200
 
 class _EnvRunner(object):
 

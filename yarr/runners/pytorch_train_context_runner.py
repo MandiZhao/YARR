@@ -325,20 +325,36 @@ class PyTorchTrainContextRunner(TrainRunner):
         process = psutil.Process(os.getpid())
         num_cpu = psutil.cpu_count()
 
-        context_step = 0 
-        for _ in range(self._context_cfg.pretrain_context_steps): 
+        cstep = 0 # in case we want pre-training
+        for cstep in range(self._context_cfg.pretrain_context_steps): 
             context_batch = next(self.ctxt_train_iter)
-            context_update_dict = self._agent.update_context(context_step, context_batch)
-            context_step += 1
-            if context_step % self._context_cfg.val_freq == 0:
-                self.validate_context(context_step)
-            if context_step % self._log_freq == 0:
+            context_update_dict = self._agent.update_context(cstep, context_batch) 
+            if cstep % self._context_cfg.val_freq == 0:
+                self.validate_context(cstep)
+            if cstep % self._log_freq == 0:
                 agent_summaries = self._agent._context_agent.update_summaries() # only about context losses
-                self._writer.log_context_only(context_step, agent_summaries)
+                self._writer.log_context_only(cstep, agent_summaries)
+        
+        # for j in range(10):
+        #     sampled_batch, sampled_buf_ids = self._sample_replay(data_iter) 
+        #     self._agent.visualize_batch(j, sampled_batch)
+
+        # raise ValueError
+
+        for cstep in range(self._context_cfg.pretrain_replay_steps): 
+            sampled_batch, sampled_buf_ids = self._sample_replay(data_iter) 
+            replay_update_dict = self._agent.update_context_via_qagent(cstep, sampled_batch) # returns context_agent._replay_summaries
+            if cstep % self._log_freq == 0: 
+                logging.info('Logging context update step %d, loss: %s, acc: %s' % (
+                    cstep, replay_update_dict['replay_batch/emb_loss'].item(), replay_update_dict['replay_batch/emd_acc'].item())
+                ) 
+                self._writer.log_context_only(
+                    cstep, self._agent._context_agent.update_summaries()) # only about context losses
+
 
         buffer_summaries = defaultdict(list)
         recent_online_task_ids = []
-        for i in range(self._iterations):
+        for i in range(cstep, self._iterations):
             self._env_runner.set_step(i)
 
             log_iteration = i % self._log_freq == 0  

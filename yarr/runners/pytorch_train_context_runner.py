@@ -351,10 +351,10 @@ class PyTorchTrainContextRunner(TrainRunner):
                 self._writer.log_context_only(
                     cstep, self._agent._context_agent.update_summaries()) # only about context losses
 
-
+        context_step = 0
         buffer_summaries = defaultdict(list)
         recent_online_task_ids = []
-        for i in range(cstep, self._iterations):
+        for i in range(self._iterations):
             self._env_runner.set_step(i)
 
             log_iteration = i % self._log_freq == 0  

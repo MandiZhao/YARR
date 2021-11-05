@@ -70,7 +70,8 @@ class PyTorchTrainContextRunner(TrainRunner):
                  offline: bool = False, # i.e. no env runner 
                  eval_only: bool = False, # no agent update
                  task_var_to_replay_idx: dict = {},
-                 switch_online_tasks: int = -1 # if > 0: try setting the env runner to focus on only this many tasks
+                 switch_online_tasks: int = -1, # if > 0: try setting the env runner to focus on only this many tasks
+                 dev_cfg=None, 
                  ):
         super(PyTorchTrainContextRunner, self).__init__(
             agent, env_runner, wrapped_replay_buffer,
@@ -137,6 +138,7 @@ class PyTorchTrainContextRunner(TrainRunner):
             assert switch_online_tasks <= len(self.online_task_ids), f"Cannot select more tasks than avaliable"
             logging.warning(f'Environment runner priority-selects {switch_online_tasks} tasks from a total of {len(self.online_task_ids)} to run')
 
+        self.dev_cfg = dev_cfg 
          
 
     def _save_model(self, i):
@@ -350,7 +352,9 @@ class PyTorchTrainContextRunner(TrainRunner):
                 ) 
                 self._writer.log_context_only(
                     cstep, self._agent._context_agent.update_summaries()) # only about context losses
-
+        if self.dev_cfg.get('freeze_emb', False):
+            logging.info('Freezing embedding after context pre-training!')
+            self._agent.rebuild_optimizer()
         context_step = 0
         buffer_summaries = defaultdict(list)
         recent_online_task_ids = []

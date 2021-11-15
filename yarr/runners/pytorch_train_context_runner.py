@@ -248,7 +248,8 @@ class PyTorchTrainContextRunner(TrainRunner):
                     demo_samples = torch.stack( [
                         torch.tensor(NOISY_VECS[int(_id)]) for _id in variation_ids], 0).to(torch.float32)
                     if self.dev_cfg.get('noisy_dim_20', False):
-                        torch.tensor(NOISY_VECS_20[int(_id)]) for _id in variation_ids], 0).to(torch.float32)
+                        demo_samples = torch.stack([
+                            torch.tensor(NOISY_VECS_20[int(_id)]) for _id in variation_ids], 0).to(torch.float32)
                     one_buf[CONTEXT_KEY] = demo_samples 
                 else:
                     # demo_samples = self._train_demo_dataset.sample_for_replay(task_ids, variation_ids) # -> this matches every single variation to a context video (B,K,...) -> (B,N,T,3,128,128)

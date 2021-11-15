@@ -38,6 +38,28 @@ TASK_ID='task_id'
 VAR_ID='variation_id'
 DEMO_KEY='front_rgb' # what to look for in the demo dataset
 WAIT_WARN=200
+NOISY_VECS={
+    0: np.array([ 0.11925248, -0.14782887, -0.40366346, -0.27328304, -0.42401568,
+        0.33704594,  0.41446234,  0.48869492,  0.10952299,  0.10154486]),
+    1: np.array([ 0.22487479,  0.32561551, -0.22771661, -0.04798632, -0.43327144,
+        0.35466405,  0.03087024,  0.00246092, -0.3818759 , -0.57354108]),
+    2: np.array([-0.38734519, -0.31740813, -0.36871456, -0.14102713, -0.17094035,
+        0.32675689, -0.21493319,  0.28633581,  0.24948758, -0.51667931]),
+    3: np.array([ 0.18540121, -0.36820533,  0.18308575, -0.01892064, -0.33780466,
+        0.26526095,  0.53540062,  0.2748794 ,  0.24834015,  0.43337298]),
+    4: np.array([ 0.2148131 , -0.25162006, -0.30730072,  0.50525774,  0.45081893,
+       -0.49889678, -0.21654777, -0.16233489,  0.11915335, -0.03528155]), 
+    5: np.array([-0.40118621,  0.41678064,  0.28864454, -0.53277101, -0.12082425,
+        0.4367015 , -0.27647954, -0.05299221,  0.0547752 ,  0.10308621]),
+    6: np.array([-0.02411682, -0.11224046,  0.03227223,  0.11851931, -0.40225017,
+        0.46261037, -0.428421  , -0.47695132, -0.20697166, -0.37690079]),
+    7: np.array([-0.32398346,  0.18281037,  0.08709628, -0.44767024,  0.40639542,
+        0.23711536,  0.40272094,  0.17245336, -0.18032934,  0.45584731]),
+    8: np.array([ 0.25014659,  0.25815153, -0.09170533, -0.33635687,  0.50909926,
+        0.57739529,  0.22484016, -0.1269459 , -0.11276835,  0.278004  ]),
+    9: np.array([-0.18245398, -0.22966254,  0.4778035 , -0.38738104, -0.39714424,
+        0.32174066,  0.17275781,  0.32849225, -0.13299022, -0.34485649])
+}
 
 class PyTorchTrainContextRunner(TrainRunner):
 
@@ -65,6 +87,7 @@ class PyTorchTrainContextRunner(TrainRunner):
                  context_device=None,
                  no_context: bool = False, 
                  one_hot: bool = False,
+                 noisy_one_hot: bool = False, 
                  num_vars: int = 20,
                  update_buffer_prio: bool = True, 
                  offline: bool = False, # i.e. no env runner 
@@ -123,6 +146,7 @@ class PyTorchTrainContextRunner(TrainRunner):
         self.ctxt_train_iter = iter(train_demo_dataset) if train_demo_dataset is not None else None 
         self.ctxt_val_iter = iter(val_demo_dataset) if val_demo_dataset is not None else None
         self._one_hot = one_hot
+        self._noisy_one_hot = noisy_one_hot 
         self._num_vars = num_vars
         self._offline = offline 
         if offline:
@@ -179,6 +203,10 @@ class PyTorchTrainContextRunner(TrainRunner):
                     var_ids_tensor = variation_ids.clone().detach().to(torch.int64)
                     demo_samples = F.one_hot(var_ids_tensor, num_classes=self._num_vars)
                     one_buf[CONTEXT_KEY] = demo_samples.clone().detach().to(torch.float32) 
+                elif self._noisy_one_hot: 
+                    demo_samples = torch.stack( [
+                        torch.tensor(NOISY_VECS[int(_id)]) for _id in variation_ids], 0).to(torch.float32) 
+                    one_buf[CONTEXT_KEY] = demo_samples 
                 else:
                     # demo_samples = self._train_demo_dataset.sample_for_replay(task_ids, variation_ids) # -> this matches every single variation to a context video (B,K,...) -> (B,N,T,3,128,128)
                     #TODO(1014): change here to no match, action samples either use single or randomly sample from context samples
@@ -417,7 +445,7 @@ class PyTorchTrainContextRunner(TrainRunner):
                 self._step(i, sampled_batch, sampled_buf_ids)
                 step_time = time.time() - t
              
-            if (not self._no_context) and (not self._one_hot) and (i % self._context_cfg.update_freq == 0):
+            if (not self._no_context) and (not self._one_hot) and (not self._noisy_one_hot) and (i % self._context_cfg.update_freq == 0):
                 if context_step % self._context_cfg.val_freq == 0:
                         self.validate_context(context_step)
                 for _ in range(self._context_cfg.num_update_itrs): 

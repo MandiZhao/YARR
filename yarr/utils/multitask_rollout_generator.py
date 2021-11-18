@@ -10,6 +10,7 @@ from yarr.utils.transition import ReplayTransition
 import torch 
 import torch.nn.functional as F
 CONTEXT_KEY = 'demo_sample' 
+DEMO_KEY='front_rgb'
 TASK_ID='task_id'
 VAR_ID='variation_id'
 NOISY_VECS={
@@ -110,12 +111,13 @@ class RolloutGeneratorWithContext(object):
         """takes in an task_id from environment and sample some 
             demos from offline dataset"""
         assert self._demo_dataset is not None, 'Cannot sample without demo dataset pre-loaded'
-        data = self._demo_dataset.sample_one_variation(task_id, variation_id)[0]
-        # data = self._demo_dataset.sample_one_variation(
-        #     task_id, variation_id, size=5)  # NOTE(sample multiple here!)
-        assert task_name in data['name'], f"Expects {task_name} to be the prefix of {data['name']}"
-        demo_sample = data.get(self._sample_key, None)
-        assert demo_sample is not None, f"Key {self._sample_key} was not found in sampled data"
+        # data = self._demo_dataset.sample_one_variation(task_id, variation_id)[0]
+        # NOTE: change to sample multiple here!
+        demo_sample = self._demo_dataset.sample_for_replay_no_match(task_id, variation_id) # draw K independent samples 
+        demo_sample = torch.stack( [ d[DEMO_KEY] for d in demo_sample ], dim=0)
+        # assert task_name in data['name'], f"Expects {task_name} to be the prefix of {data['name']}"
+        # demo_sample = data.get(self._sample_key, None)
+        # assert demo_sample is not None, f"Key {self._sample_key} was not found in sampled data"
         return demo_sample
 
     
@@ -149,7 +151,7 @@ class RolloutGeneratorWithContext(object):
 
             if self._one_hot:
                 prepped_data[CONTEXT_KEY] = one_hot_vec   
-            if self._noisy_one_hot:
+            if self._noisy_one_hot or self._dev_cfgs.get('noisy_dim_20', False):
                 prepped_data[CONTEXT_KEY] = noisy_one_hot
             # print('rollout generator input:', prepped_data.keys())
             act_result = agent.act(step_signal.value, prepped_data,

@@ -247,8 +247,9 @@ class PyTorchTrainContextRunner(TrainRunner):
                 elif self._noisy_one_hot: 
                     demo_samples = torch.stack( [
                         torch.tensor(NOISY_VECS[int(_id)]) for _id in variation_ids], 0).to(torch.float32)
-                    if self.dev_cfg.get('noisy_dim_20', False):
-                        demo_samples = torch.stack([
+                    one_buf[CONTEXT_KEY] = demo_samples 
+                elif self.dev_cfg.get('noisy_dim_20', False):
+                    demo_samples = torch.stack([
                             torch.tensor(NOISY_VECS_20[int(_id)]) for _id in variation_ids], 0).to(torch.float32)
                     one_buf[CONTEXT_KEY] = demo_samples 
                 else:
@@ -258,6 +259,7 @@ class PyTorchTrainContextRunner(TrainRunner):
                     one_buf[CONTEXT_KEY] = torch.stack( [ d[DEMO_KEY] for d in demo_samples ], dim=0)
                     # print(f'task {task} var {var}, context sample: ', one_buf[CONTEXT_KEY].shape)
                     #print(one_buf[CONTEXT_KEY].shape) # should be (num_sample, video_len, 3, 128, 128) 
+                
             sampled_batch.append(one_buf)
 
         result = {}

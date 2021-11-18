@@ -421,7 +421,7 @@ class PyTorchTrainContextRunner(TrainRunner):
         for cstep in range(self._context_cfg.pretrain_replay_steps): 
             sampled_batch, sampled_buf_ids = self._sample_replay(data_iter) 
             replay_update_dict = self._agent.update_context_via_qagent(
-                cstep, sampled_batch, classify=self.dev_cfg.get('classify', False)) # returns context_agent._replay_summaries
+                cstep, sampled_batch, classify=self.dev_cfg.get('classify', False), emb_weight=self.dev_cfg.get('emb_weight', 1.0)) # returns context_agent._replay_summaries
             if cstep % self._log_freq == 0: 
                 logging.info('Logging context update step %d, emb loss: %s, acc: %s' % (
                     cstep, replay_update_dict['replay_batch/emb_loss'].item(), replay_update_dict['replay_batch/emd_acc'].item())

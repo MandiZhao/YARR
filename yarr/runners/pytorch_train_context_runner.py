@@ -37,6 +37,7 @@ NUM_WEIGHTS_TO_KEEP = 10
 TASK_ID='task_id'
 VAR_ID='variation_id'
 DEMO_KEY='front_rgb' # what to look for in the demo dataset
+ONE_HOT_KEY='var_one_hot'
 WAIT_WARN=200
 NOISY_VECS={
     0: np.array([ 0.11925248, -0.14782887, -0.40366346, -0.27328304, -0.42401568,
@@ -240,8 +241,8 @@ class PyTorchTrainContextRunner(TrainRunner):
                 task_ids, variation_ids = one_buf[TASK_ID], one_buf[VAR_ID]
                 task, var = task_ids[0], variation_ids[0]
                 assert torch.all(task_ids == task) and torch.all(variation_ids == var), f'For now, assume each buffer contains only 1 vairation from 1 task'
-                if self._one_hot:
-                    var_ids_tensor = variation_ids.clone().detach().to(torch.int64)
+                var_ids_tensor = variation_ids.clone().detach().to(torch.int64)
+                if self._one_hot: 
                     demo_samples = F.one_hot(var_ids_tensor, num_classes=self._num_vars)
                     one_buf[CONTEXT_KEY] = demo_samples.clone().detach().to(torch.float32) 
                 elif self._noisy_one_hot: 
@@ -259,7 +260,7 @@ class PyTorchTrainContextRunner(TrainRunner):
                     one_buf[CONTEXT_KEY] = torch.stack( [ d[DEMO_KEY] for d in demo_samples ], dim=0)
                     # print(f'task {task} var {var}, context sample: ', one_buf[CONTEXT_KEY].shape)
                     #print(one_buf[CONTEXT_KEY].shape) # should be (num_sample, video_len, 3, 128, 128) 
-                
+                    one_buf[ONE_HOT_KEY] = F.one_hot(var_ids_tensor, num_classes=self._num_vars).detach().to(torch.float32) 
             sampled_batch.append(one_buf)
 
         result = {}
@@ -419,11 +420,15 @@ class PyTorchTrainContextRunner(TrainRunner):
 
         for cstep in range(self._context_cfg.pretrain_replay_steps): 
             sampled_batch, sampled_buf_ids = self._sample_replay(data_iter) 
-            replay_update_dict = self._agent.update_context_via_qagent(cstep, sampled_batch) # returns context_agent._replay_summaries
+            replay_update_dict = self._agent.update_context_via_qagent(
+                cstep, sampled_batch, classify=self.dev_cfg.get('classify', False)) # returns context_agent._replay_summaries
             if cstep % self._log_freq == 0: 
-                logging.info('Logging context update step %d, loss: %s, acc: %s' % (
+                logging.info('Logging context update step %d, emb loss: %s, acc: %s' % (
                     cstep, replay_update_dict['replay_batch/emb_loss'].item(), replay_update_dict['replay_batch/emd_acc'].item())
                 ) 
+                if self.dev_cfg.get('classify', False):
+                    logging.info('Classification pred loss: %s' % (
+                    replay_update_dict['replay_batch/pred_loss'].item())) 
                 self._writer.log_context_only(
                     cstep, self._agent._context_agent.update_summaries()) # only about context losses
         if self.dev_cfg.get('freeze_emb', False):

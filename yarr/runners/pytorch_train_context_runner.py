@@ -420,13 +420,23 @@ class PyTorchTrainContextRunner(TrainRunner):
 
         for cstep in range(self._context_cfg.pretrain_replay_steps): 
             sampled_batch, sampled_buf_ids = self._sample_replay(data_iter) 
+            train_classifier = self.dev_cfg.get('classify', False)
+            if self.dev_cfg.get('freeze_after_steps', -1) > 0 and cstep < self.dev_cfg.get('freeze_after_steps', -1):
+                train_classifier = False # not touching the classifier loss before embedding freeze
             replay_update_dict = self._agent.update_context_via_qagent(
-                cstep, sampled_batch, classify=self.dev_cfg.get('classify', False), emb_weight=self.dev_cfg.get('emb_weight', 1.0)) # returns context_agent._replay_summaries
+                cstep, 
+                sampled_batch, 
+                classify=train_classifier, 
+                emb_weight=self.dev_cfg.get('emb_weight', 1.0)) # returns context_agent._replay_summaries
+            if cstep == self.dev_cfg.get('freeze_after_steps', -1):
+                assert self.dev_cfg.get('classify', False), 'Should be training classifers after freezing'
+                logging.info('Freezing embedding network but keep updating the classifier MLPs !')
+                self._agent.rebuild_optimizer()
             if cstep % self._log_freq == 0: 
                 logging.info('Logging context update step %d, emb loss: %s, acc: %s' % (
-                    cstep, replay_update_dict['replay_batch/emb_loss'].item(), replay_update_dict['replay_batch/emd_acc'].item())
+                    cstep, replay_update_dict['replay_batch/emb_loss'].item(), replay_update_dict.get('replay_batch/emd_acc', 0))
                 ) 
-                if self.dev_cfg.get('classify', False):
+                if train_classifier:
                     logging.info('Classification pred loss: %s' % (
                     replay_update_dict['replay_batch/pred_loss'].item())) 
                 self._writer.log_context_only(

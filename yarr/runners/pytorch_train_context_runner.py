@@ -494,19 +494,15 @@ class PyTorchTrainContextRunner(TrainRunner):
                 sample_time = time.time() - t
                 # print('context runner buff ids:', result['buffer_id'])
  
-                for key in [VAR_ID, TASK_ID, 'buffer_id']:
-                    # buffer_summaries.append(
-                    #     HistogramSummary(key+'_in_batch', sampled_batch[key].cpu().detach().numpy()
-                    #     )
-                    # )
+                for key in [VAR_ID, TASK_ID, 'buffer_id']: 
                     buffer_summaries[key].extend(
                         list(sampled_batch[key].cpu().detach().numpy().flatten() ))
                     # print(key, buffer_summaries[key])
                 t = time.time() 
                 self._step(i, sampled_batch, sampled_buf_ids)
                 step_time = time.time() - t
-             
-            if (not self._no_context) and (not self._one_hot) and (not self._noisy_one_hot) and (i % self._context_cfg.update_freq == 0):
+   
+            if (i > 0) and (not self._no_context) and (not self._one_hot) and (not self._noisy_one_hot) and (i % self._context_cfg.update_freq == 0):
                 if context_step % self._context_cfg.val_freq == 0:
                         self.validate_context(context_step)
                 for _ in range(self._context_cfg.num_update_itrs): 

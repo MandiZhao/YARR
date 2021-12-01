@@ -434,7 +434,7 @@ class PyTorchTrainContextRunner(TrainRunner):
                 self._agent.rebuild_optimizer()
             if cstep % self._log_freq == 0: 
                 logging.info('Logging context update step %d, emb loss: %s, acc: %s' % (
-                    cstep, replay_update_dict['replay_batch/emb_loss'].item(), replay_update_dict.get('replay_batch/emd_acc', 0))
+                    cstep, replay_update_dict.get('replay_batch/emb_loss', 0), replay_update_dict.get('replay_batch/emd_acc', 0))
                 ) 
                 if train_classifier:
                     logging.info('Classification pred loss: %s' % (

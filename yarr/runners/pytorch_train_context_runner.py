@@ -23,9 +23,7 @@ from yarr.runners.train_runner import TrainRunner
 from yarr.utils.log_writer import LogWriter
 from yarr.utils.stat_accumulator import StatAccumulator
 from yarr.agents.agent import ScalarSummary, HistogramSummary, ImageSummary, \
-    VideoSummary
-
-from arm.demo_dataset import MultiTaskDemoSampler, RLBenchDemoDataset, collate_by_id
+    VideoSummary 
 from arm.models.slowfast  import TempResNet 
 from omegaconf import DictConfig
 
@@ -113,6 +111,7 @@ class PyTorchTrainContextRunner(TrainRunner):
                  train_device: torch.device, 
                  stat_accumulator: Union[StatAccumulator, None] = None,
                  iterations: int = int(1e6),
+                 eval_episodes: int = 1000, 
                  logdir: str = '/tmp/yarr/logs',
                  log_freq: int = 10,
                  transitions_before_train: int = 1000,
@@ -194,8 +193,9 @@ class PyTorchTrainContextRunner(TrainRunner):
         if offline:
             logging.warning('Train Runner is not spinning up any EnvRunner instances')
         self._eval_only = eval_only
+        self.eval_episodes = eval_episodes
         if eval_only:
-            logging.warning('Only EnvRunner is spinning, no agent update happening')
+            logging.warning(f'Only EnvRunner is spinning, no agent update happening, evaluating a total of {eval_episodes} episodes')
 
         self.switch_online_tasks = switch_online_tasks
         self.task_var_to_replay_idx = task_var_to_replay_idx
@@ -456,8 +456,10 @@ class PyTorchTrainContextRunner(TrainRunner):
                 process.cpu_percent(interval=None)
 
             def get_replay_ratio():
-                if self._offline or self._eval_only:
+                if self._offline:
                     return 0 
+                if self._eval_only:
+                    return 100 
                 size_used = batch_times_buffers_per_sample * i
                 # size_used = single_buffer_bsize * i
                 size_added = (
@@ -517,7 +519,8 @@ class PyTorchTrainContextRunner(TrainRunner):
 
             if log_iteration and self._writer is not None:
                 replay_ratio = get_replay_ratio()
-                logging.info('Step %d. Sample time: %s. Step time: %s. Replay ratio: %s.' % (
+                if not self._eval_only:
+                    logging.info('Step %d. Sample time: %s. Step time: %s. Replay ratio: %s.' % (
                              i, sample_time, step_time, replay_ratio))
                 agent_summaries = []
                 if not self._eval_only:
@@ -570,6 +573,46 @@ class PyTorchTrainContextRunner(TrainRunner):
             if i % self._save_freq == 0 and self._weightsdir is not None and not self._eval_only:
                 self._save_model(i)
 
+        if self._writer is not None:
+            self._writer.close()
+
+        logging.info('Stopping envs ...')
+        self._env_runner.stop()
+        [r.replay_buffer.shutdown() for r in self._wrapped_buffer]
+
+    def evaluate(self, resume_dir: str = None):
+
+        signal.signal(signal.SIGINT, self._signal_handler)
+
+        self._save_load_lock = Lock() 
+        self._agent = copy.deepcopy(self._agent)
+        self._agent.build(training=True, device=self._train_device, context_device=self._context_device)
+        if resume_dir is not None:
+            logging.info('Resuming from checkpoint weights AND saving to a new step-0 for env workers to load')
+            print(resume_dir)
+            self._agent.load_weights(resume_dir)
+
+        if self._weightsdir is not None:
+            self._save_model(0)  # Save weights so workers can load.
+ 
+        # Kick off the environments
+        self._env_runner.start(self._save_load_lock)
+        num_episodes = self._env_runner._total_episodes.get('eval_envs', 0)
+        last_logged = num_episodes
+        while num_episodes <= self.eval_episodes:
+            # print(num_episodes)
+            time.sleep(1)
+            if num_episodes % self._log_freq == 0 and num_episodes != last_logged:
+                # self._env_runner.set_step(i)     
+                env_summaries = self._env_runner.summaries() 
+                self._writer.add_summaries(num_episodes, env_summaries) 
+                last_logged = num_episodes
+                logging.info(f'logging at {num_episodes} evaled episodes')
+
+            num_episodes = self._env_runner._total_episodes.get('eval_envs', 0)
+
+        self._writer.end_iteration()
+ 
         if self._writer is not None:
             self._writer.close()
 

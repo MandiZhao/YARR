@@ -70,6 +70,7 @@ class EnvRunner(object):
         self._step_signal = Value('i', -1)
         self._new_transitions = {'train_envs': 0, 'eval_envs': 0}
         self._total_transitions = {'train_envs': 0, 'eval_envs': 0}
+        self._total_episodes = {'train_envs': 0, 'eval_envs': 0}
         self.log_freq = 1000  # Will get overridden later
         self.target_replay_ratio = None  # Will get overridden later
         self.current_replay_ratio = Value('f', -1) 
@@ -96,9 +97,14 @@ class EnvRunner(object):
         if self._stat_accumulator is not None:
             summaries.extend(self._stat_accumulator.pop())
         for key, value in self._new_transitions.items():
-            summaries.append(ScalarSummary('%s/new_transitions' % key, value))
+            summaries.append(
+                ScalarSummary('%s/new_transitions' % key, value))
         for key, value in self._total_transitions.items():
-            summaries.append(ScalarSummary('%s/total_transitions' % key, value))
+            summaries.append(
+                ScalarSummary('%s/total_transitions' % key, value))
+        for key, value in self._total_episodes.items():
+            summaries.append(
+                ScalarSummary('%s/total_episodes' % key, value))
         self._new_transitions = {'train_envs': 0, 'eval_envs': 0}
         summaries.extend(self._agent_summaries)
         
@@ -141,6 +147,10 @@ class EnvRunner(object):
                     'eval_envs' if eval else 'train_envs'] += 1
                 self._total_transitions[
                     'eval_envs' if eval else 'train_envs'] += 1
+                
+                if transition.terminal:
+                    self._total_episodes['eval_envs' if eval else 'train_envs'] += 1
+
                 if self._stat_accumulator is not None:
                     self._stat_accumulator.step(transition, eval)
             self._internal_env_runner.stored_transitions[:] = []  # Clear list

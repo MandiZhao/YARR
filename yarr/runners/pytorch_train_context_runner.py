@@ -1,6 +1,7 @@
 import copy
 import logging
 import os
+from random import sample
 import shutil
 import signal
 import sys
@@ -122,6 +123,7 @@ class PyTorchTrainContextRunner(TrainRunner):
                  csv_logging: bool = False,
                  wandb_logging: bool = False,
                  buffers_per_batch: int = -1, # -1 = all
+                 num_tasks_per_batch: int = 1, 
                  context_cfg: DictConfig = None,  # may want to more/less frequently update context
                  train_demo_dataset=None,
                  val_demo_dataset=None,
@@ -149,6 +151,7 @@ class PyTorchTrainContextRunner(TrainRunner):
             wrapped_replay_buffer, list) else [wrapped_replay_buffer]
         self._num_total_buffers = len(self._wrapped_buffer)
         self._buffers_per_batch = buffers_per_batch if buffers_per_batch > 0 else self._num_total_buffers
+        self._num_tasks_per_batch = num_tasks_per_batch
         self._buffer_sample_rates = [1.0 / self._num_total_buffers for _ in range(len(wrapped_replay_buffer))]
         self._per_buffer_error = [1.0 for  _ in range(len(wrapped_replay_buffer))]
         self._update_buffer_prio = update_buffer_prio
@@ -199,6 +202,11 @@ class PyTorchTrainContextRunner(TrainRunner):
 
         self.switch_online_tasks = switch_online_tasks
         self.task_var_to_replay_idx = task_var_to_replay_idx
+        self.task_ids = [int(k) for k in task_var_to_replay_idx.keys()]
+        assert self._num_tasks_per_batch <= len(self.task_ids), 'Cannot sample more tasks than avaliable'
+        self._task_sample_rates = [1/len(self.task_ids) for _ in self.task_ids]
+        self.task_vars = [task_var_to_replay_idx[_id] for _id in self.task_ids]
+        print('Two-layer sampling from tasks and var ids:', self.task_ids, self.task_vars)
         self.online_task_ids = [int(k) for k in task_var_to_replay_idx.keys()]
         if switch_online_tasks > 0:
             assert switch_online_tasks <= len(self.online_task_ids), f"Cannot select more tasks than avaliable"
@@ -219,8 +227,28 @@ class PyTorchTrainContextRunner(TrainRunner):
                 shutil.rmtree(prev_dir)
     
     def _sample_replay(self, data_iter):
+        # New: sample fixed number of different tasks
         if len(data_iter) == 1:
-            sampled_buf_ids = [0] 
+            sampled_buf_ids = [0]
+        elif self._num_tasks_per_batch > 0:
+            sampled_task_ids = np.random.choice(
+                a=self.task_ids,
+                size=self._num_tasks_per_batch, 
+                replace=False, 
+                p=self._task_sample_rates,
+                )
+            sampled_buf_ids = [
+                np.random.choice(
+                    list(self.task_var_to_replay_idx[task_id].values()), 
+                    size=1)[0] for task_id in sampled_task_ids]
+            while len(sampled_buf_ids) < self._buffers_per_batch:
+                task_id = np.random.choice(
+                    sampled_task_ids, size=1)
+                sampled_buf_ids.append(
+                    np.random.choice(
+                        self.task_var_to_replay_idx[task_id].values(), size=1)[0]
+                )
+            # print('sampled task ids:', sampled_task_ids, sampled_buf_ids)
         else:
             sampled_buf_ids = np.random.choice(
                 a=range(len(data_iter)), 
@@ -243,7 +271,8 @@ class PyTorchTrainContextRunner(TrainRunner):
                 assert torch.all(task_ids == task) and torch.all(variation_ids == var), f'For now, assume each buffer contains only 1 vairation from 1 task'
                 var_ids_tensor = variation_ids.clone().detach().to(torch.int64)
                 if self._one_hot: 
-                    demo_samples = F.one_hot(var_ids_tensor, num_classes=self._num_vars)
+                    # demo_samples = F.one_hot(var_ids_tensor, num_classes=self._num_vars)
+                    demo_samples = F.one_hot(one_buf['buffer_id'], num_classes=len(data_iter))
                     one_buf[CONTEXT_KEY] = demo_samples.clone().detach().to(torch.float32) 
                 elif self._noisy_one_hot: 
                     demo_samples = torch.stack( [
@@ -304,23 +333,24 @@ class PyTorchTrainContextRunner(TrainRunner):
         if self._update_buffer_prio:
             sum_error = sum(self._per_buffer_error)
             self._buffer_sample_rates = [ e/sum_error for e in self._per_buffer_error]
+             
             # print('updated buffer sample rates:', self._buffer_sample_rates) 
+        per_task_errors = dict()
+        for task_id, v in self.task_var_to_replay_idx.items():
+            per_task_errors[task_id] = np.mean([
+                self._per_buffer_error[buff_idx] for var_id, buff_idx in v.items()])
+        # task_high_to_low = [pair[0] for pair in sorted(per_task_errors.items(), key=lambda item: -item[1])] 
+        per_task_errors = sorted(per_task_errors.items(), key=lambda item: item[0]) # list of pairs: [ (task_id, error), ... ]
+        sum_error = sum([pair[1] for pair in per_task_errors])
+        self._task_sample_rates = [ e/sum_error for e in [pair[1] for pair in per_task_errors]]
 
         if self.switch_online_tasks > 0:
-            per_task_errors = dict()
-            for task_id, v in self.task_var_to_replay_idx.items():
-                per_task_errors[task_id] = np.mean([
-                    self._per_buffer_error[buff_idx] for var_id, buff_idx in v.items()])
-            # task_high_to_low = [pair[0] for pair in sorted(per_task_errors.items(), key=lambda item: -item[1])] 
-            per_task_errors = sorted(per_task_errors.items(), key=lambda item: item[0]) # list of pairs: [ (task_id, error), ... ]
-            sum_error = sum([pair[1] for pair in per_task_errors])
-            task_sample_rates = [ e/sum_error for e in [pair[1] for pair in per_task_errors]]
-
+            
             self.online_task_ids = list(np.random.choice(
                 a=range(len(per_task_errors)), 
                 size=self.switch_online_tasks,
                 replace=False, 
-                p=task_sample_rates
+                p=self._task_sample_rates
                 ))
         # prio_key = 'priority' 
         # priority = update_dict[prio_key].cpu().detach().numpy() if isinstance(update_dict[prio_key], torch.Tensor) \

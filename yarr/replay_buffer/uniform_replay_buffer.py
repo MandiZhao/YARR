@@ -135,23 +135,23 @@ class UniformReplayBuffer(ReplayBuffer):
             raise ValueError('There is not enough capacity to cover '
                              'update_horizon and stack_size.')
 
-        logging.info(
-            'Creating a %s replay memory with the following parameters:',
-            self.__class__.__name__)
-        logging.info('\t timesteps: %d', timesteps)
-        logging.info('\t replay_capacity: %d', replay_capacity)
-        logging.info('\t batch_size: %d', batch_size)
-        logging.info('\t update_horizon: %d', update_horizon)
-        logging.info('\t gamma: %f', gamma)
+        # logging.info(
+        #     'Creating a %s replay memory with the following parameters:',
+        #     self.__class__.__name__)
+        # logging.info('\t timesteps: %d', timesteps)
+        # logging.info('\t replay_capacity: %d', replay_capacity)
+        # logging.info('\t batch_size: %d', batch_size)
+        # logging.info('\t update_horizon: %d', update_horizon)
+        # logging.info('\t gamma: %f', gamma)
 
         self._disk_saving = save_dir is not None
         self._save_dir = save_dir
         self._purge_replay_on_shutdown = purge_replay_on_shutdown
         if self._disk_saving:
-            logging.info('\t saving to disk: %s', self._save_dir)
+            #logging.info('\t saving to disk: %s', self._save_dir)
             os.makedirs(save_dir, exist_ok=True)
-        else:
-            logging.info('\t saving to RAM')
+        # else:
+        #     logging.info('\t saving to RAM')
 
 
         self._action_shape = action_shape

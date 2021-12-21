@@ -89,7 +89,8 @@ class RolloutGeneratorWithContext(object):
         sample_key='front_rgb', 
         one_hot=False, 
         noisy_one_hot=False,
-        num_vars=20,
+        num_task_vars=20,
+        task_var_to_replay_idx=dict(),
         dev_cfgs={},
         ):
         self._demo_dataset = demo_dataset 
@@ -98,7 +99,8 @@ class RolloutGeneratorWithContext(object):
         self._sample_key = sample_key 
         self._one_hot = one_hot 
         self._noisy_one_hot = noisy_one_hot 
-        self._num_vars = num_vars 
+        self._num_task_vars = num_task_vars 
+        self._task_var_to_replay_idx = task_var_to_replay_idx
         self._dev_cfgs = dev_cfgs
 
     def _get_type(self, x):
@@ -127,11 +129,12 @@ class RolloutGeneratorWithContext(object):
         task_id = env._active_task_id
         variation_id = env._active_variation_id
         task_name = env._active_task_name
+        buf_id = self._task_var_to_replay_idx[task_id][variation_id]
         #print('mt rollout gen:', task_id, variation_id, task_name)
         agent.reset()
         obs_history = {k: [np.array(v, dtype=self._get_type(v))] * timesteps for k, v in obs.items()}
         demo_samples = None
-        one_hot_vec = F.one_hot(  torch.tensor(int(variation_id)), num_classes=self._num_vars)
+        one_hot_vec = F.one_hot(  torch.tensor(int(buf_id)), num_classes=self._num_task_vars)
         if self._noisy_one_hot:
             assert int(variation_id) in NOISY_VECS.keys(), 'Support only 10 variations for now!!'
             noisy_one_hot = torch.tensor(NOISY_VECS[int(variation_id)]).clone().detach().to(torch.float32)

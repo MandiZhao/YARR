@@ -243,10 +243,11 @@ class PyTorchTrainContextRunner(TrainRunner):
                     size=1)[0] for task_id in sampled_task_ids]
             while len(sampled_buf_ids) < self._buffers_per_batch:
                 task_id = np.random.choice(
-                    sampled_task_ids, size=1)
+                    sampled_task_ids, size=1)[0]
                 sampled_buf_ids.append(
                     np.random.choice(
-                        self.task_var_to_replay_idx[task_id].values(), size=1)[0]
+                        list(self.task_var_to_replay_idx[task_id].values()), 
+                        size=1)[0]
                 )
             # print('sampled task ids:', sampled_task_ids, sampled_buf_ids)
         else:

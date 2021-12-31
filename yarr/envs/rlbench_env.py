@@ -198,10 +198,9 @@ class MultiTaskRLBenchEnv(MultiTaskEnv):
     def _set_new_task(self):
         self._active_task_id = int(np.random.choice(self._use_tasks))
         task = self._task_classes[self._active_task_id]
-        self._task = self._created_tasks[self._active_task_id] 
-        if self._task is None:
-            self._task = self._rlbench_env.get_task(task)
-            self._created_tasks[self._active_task_id] = self._task 
+        
+        self._task = self._rlbench_env.get_task(task)
+            #self._created_tasks[self._active_task_id] = self._task 
         if len(self._use_variations) > 0:
             _var = int(np.random.choice(self._use_variations))
         else:

@@ -174,11 +174,12 @@ class EnvRunner(object):
                         self._total_transitions['eval_envs'] += 1
                         if transition.terminal:
                             self._total_episodes['eval_envs'] += 1
-
+                    
+                    self._agent_ckpt_summaries[ckpt_step] = self._internal_env_runner.agent_ckpt_eval_summaries.pop(ckpt_step)
                     if self._stat_accumulator is not None:
                         self._stat_accumulator.step_all_transitions_from_ckpt(all_transitions, ckpt_step)
                     self._internal_env_runner.stored_ckpt_eval_transitions.pop(ckpt_step) # Clear 
-                    self._agent_ckpt_summaries[ckpt_step] = self._internal_env_runner.agent_ckpt_eval_summaries.pop(ckpt_step)
+                    
 
                     logging.debug('Done poping ckpt {} eval transitions to accumulator, main EnvRunner stored {} agent summaries, remaining ckpts: '.format(
                         ckpt_step, len(self._agent_ckpt_summaries[ckpt_step])), 

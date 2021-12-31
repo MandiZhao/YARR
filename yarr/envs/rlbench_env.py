@@ -175,6 +175,7 @@ class MultiTaskRLBenchEnv(MultiTaskEnv):
                  ):
         super(MultiTaskRLBenchEnv, self).__init__()
         self._task_classes = task_classes
+        self._created_tasks = [None for _ in task_classes] # avoid re-creating tasks
         self._task_names = task_names 
         self._observation_config = observation_config
         self._channels_last = channels_last
@@ -197,8 +198,10 @@ class MultiTaskRLBenchEnv(MultiTaskEnv):
     def _set_new_task(self):
         self._active_task_id = int(np.random.choice(self._use_tasks))
         task = self._task_classes[self._active_task_id]
-        
-        self._task = self._rlbench_env.get_task(task)
+        self._task = self._created_tasks[self._active_task_id] 
+        if self._task is None:
+            self._task = self._rlbench_env.get_task(task)
+            self._created_tasks[self._active_task_id] = self._task 
         if len(self._use_variations) > 0:
             _var = int(np.random.choice(self._use_variations))
         else:
@@ -206,13 +209,7 @@ class MultiTaskRLBenchEnv(MultiTaskEnv):
         self._task.set_variation(_var)
         if len(self._use_variations) > 0:
             assert self._task._variation_number in self._use_variations, f'This Env should not be sampling other variations than {self._use_variations} '
-        
-        # if not self._single_variation:
-        #     self._task.sample_variation()
-        # else:
-        #     assert self._task._variation_number == 0, 'This Env should not be sampling other variations than #0 '
-        
-        # print("setting new task:", task, self._task._variation_number) # just ranomly sample variation
+       
         self._active_variation_id = self._task._variation_number
         self._active_task_name = f"{self._task_names[self._active_task_id]}_variation{self._active_variation_id}"
 
@@ -221,6 +218,16 @@ class MultiTaskRLBenchEnv(MultiTaskEnv):
             assert _id < len(self._task_names), f'Cannot sample task id {_id}'
         self._choose_from = task_ids
 
+    def set_task_variation(self, task_id, var_id):
+        self._active_task_id = task_id 
+        task = self._task_classes[self._active_task_id]
+        self._task = self._rlbench_env.get_task(task)
+        assert var_id < self._task.variation_count(), f'Variation id {var_id} is not avaliable for task {self._task_names[task_id]}'
+        self._task.set_variation(var_id)
+        assert self._task._variation_number == var_id, f'Setting variation id failed, wanted {var_id} but still got {self._task._variation_number}'
+        self._active_variation_id = self._task._variation_number
+        self._active_task_name = f"{self._task_names[self._active_task_id]}_variation{self._active_variation_id}"
+        
     def extract_obs(self, obs: Observation):
         return _extract_obs(obs, self._channels_last, self._observation_config)
 
@@ -231,9 +238,10 @@ class MultiTaskRLBenchEnv(MultiTaskEnv):
     def shutdown(self):
         self._rlbench_env.shutdown()
 
-    def reset(self) -> dict:
+    def reset(self, swap_task=True) -> dict:
         self._episodes_this_task += 1
-        if self._episodes_this_task == self._swap_task_every:
+        # swap_task might be False, s.t. the evaluater runner can get deterministic variations
+        if (self._episodes_this_task == self._swap_task_every and swap_task):
             self._set_new_task()
             self._episodes_this_task = 0
 

@@ -558,7 +558,6 @@ class PyTorchTrainContextRunner(TrainRunner):
                         agent_summaries = self._agent.update_summaries() # should be context losses
                         self._writer.log_context_only(context_step, agent_summaries)
 
-
             if log_iteration and self._writer is not None:
                 replay_ratio = get_replay_ratio()
                 if not self._eval_only:
@@ -610,10 +609,18 @@ class PyTorchTrainContextRunner(TrainRunner):
                     i, 'monitoring/cpu_percent',
                     process.cpu_percent(interval=None) / num_cpu)
 
+            if self._env_runner._iter_eval and self._writer is not None:
+                ckpt, summs = self._env_runner.try_log_ckpt_eval()
+                if ckpt > -1:
+                    assert len(summs) != 0, 'Accumulator is empty!'
+                    logging.info(f'Logging all {len(summs)} evaluation data from checkpoint step: {ckpt}')
+                    self._writer.log_ckpt_eval(ckpt, summs)
+            
             self._writer.end_iteration()
-
+ 
             if i % self._save_freq == 0 and self._weightsdir is not None and not self._eval_only:
                 self._save_model(i)
+
 
         if self._writer is not None:
             self._writer.close()

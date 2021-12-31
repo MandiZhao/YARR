@@ -5,7 +5,7 @@ import copy
 import logging
 import os
 import time
-from multiprocessing import Process, Manager
+from multiprocessing import Value, Process, Manager
 from typing import Any, List, Union 
 
 import numpy as np
@@ -23,6 +23,7 @@ except RuntimeError:
 
 import torch 
 WAIT_WARN=200
+CHECKPT='agent_checkpoint'
 
 class _EnvRunner(object):
 
@@ -34,6 +35,7 @@ class _EnvRunner(object):
                  train_envs: int,
                  eval_envs: int,
                  episodes: int,
+                 eval_episodes: int, 
                  episode_length: int,
                  kill_signal: Any,
                  step_signal: Any,
@@ -44,6 +46,7 @@ class _EnvRunner(object):
                  online_task_ids, # limit the task options for env runner 
                  weightsdir: str = None,
                  device_list: List[int] = None, 
+                 all_task_var_ids = None,
                  ):
         self._train_env = train_env
         self._eval_env = eval_env
@@ -51,6 +54,7 @@ class _EnvRunner(object):
         self._train_envs = train_envs
         self._eval_envs = eval_envs
         self._episodes = episodes
+        self._eval_episodes = eval_episodes # evaluate each agent checkpoint this num eps for each task variation 
         self._episode_length = episode_length
         self._rollout_generator = rollout_generator
         self._weightsdir = weightsdir
@@ -64,12 +68,22 @@ class _EnvRunner(object):
         self.write_lock = manager.Lock()
         self.stored_transitions = manager.list()
         self.agent_summaries = manager.list()
+
+        self.stored_ckpt_eval_transitions = manager.dict() 
+        self.agent_ckpt_eval_summaries = manager.dict()
+
         self._kill_signal = kill_signal
         self._step_signal = step_signal
+
+        self._agent_checkpoint = Value('i', -1)
+        self._loaded_eval_checkpoint = manager.list()
+        self._finished_eval_checkpoint = manager.list()
+
         self._save_load_lock = save_load_lock
         self._current_replay_ratio = current_replay_ratio
         self._target_replay_ratio = target_replay_ratio
         self.online_task_ids = online_task_ids 
+        self._all_task_var_ids = all_task_var_ids
 
         self._device_list, self._num_device = (None, 1) if device_list is None else (
             [torch.device("cuda:%d" % int(idx)) for idx in device_list], len(device_list))
@@ -93,7 +107,7 @@ class _EnvRunner(object):
             ps.append(p)
         return ps
     
-    def spinup_train_and_eval(self, n_train, n_eval, name='env'):
+    def spinup_train_and_eval(self, n_train, n_eval, name='env', iter_eval=False):
         ps = []
         i = 0
         # num_cpus = os.cpu_count()
@@ -112,7 +126,7 @@ class _EnvRunner(object):
             n = 'eval_' + name + str(j)
             self._p_args[n] = (n, True, j)
             self.p_failures[n] = 0
-            p = Process(target=self._run_env, args=self._p_args[n], name=n)
+            p = Process(target=(self._iterate_all_vars if iter_eval else self._run_env), args=self._p_args[n], name=n)
             p.start()
             # print(os.system(f"taskset -cp {int(j * per_proc)}-{min(num_cpus-1, int( (j+1) * per_proc )) } {p.pid}" ))
             ps.append(p)
@@ -137,12 +151,47 @@ class _EnvRunner(object):
                             self._agent.load_weights(d)
                         except FileNotFoundError:
                             # Rare case when agent hasn't finished writing.
+                            logging.warning('_EnvRunner: agent hasnt finished writing.')
                             time.sleep(1)
                             self._agent.load_weights(d)
                         logging.info('Agent %s: Loaded weights: %s' % (self._name, d))
                     break
             logging.info('Waiting for weights to become available.')
             time.sleep(1)
+
+    def _load_next_unevaled(self):
+        if self._weightsdir is None:
+            logging.info("'weightsdir' was None, so not loading weights.")
+            return
+        while True:
+            weight_folders = []
+            with self._save_load_lock:
+                if os.path.exists(self._weightsdir):
+                    weight_folders = os.listdir(self._weightsdir) 
+
+                if len(weight_folders) > 0:
+                    weight_folders = sorted(map(int, weight_folders))
+                    weight_folders = [w for w in weight_folders if w not in self._loaded_eval_checkpoint ]
+                    # load the next unevaluated checkpoint 
+                     
+                if len(weight_folders) > 0:
+                    w = weight_folders[0]  
+                    self._agent_checkpoint.value = int(w)
+                    d = os.path.join(self._weightsdir, str(w))
+                    try:
+                        self._agent.load_weights(d)
+                    except FileNotFoundError:
+                        # Rare case when agent hasn't finished writing.
+                        logging.warning('_EnvRunner: agent hasnt finished writing.')
+                        time.sleep(1)
+                        self._agent.load_weights(d)
+                    logging.info('Agent %s: Loaded weights: %s for evaluation' % (self._name, d)) 
+                    with self.write_lock:
+                        self._loaded_eval_checkpoint.append(w)
+                    
+                    break 
+            logging.info('Waiting for weights to become available.') 
+            time.sleep(1) 
 
     def _get_type(self, x):
         if x.dtype == np.float64:
@@ -173,7 +222,7 @@ class _EnvRunner(object):
             self._load_save()
             logging.debug('%s: Starting episode %d.' % (name, ep))
             if not eval and len(self.online_task_ids) > 0:
-                # print(f"env runner setting online tasks: {self.online_task_ids}")
+                logging.debug(f"env runner setting online tasks: {self.online_task_ids}")
                 env.set_avaliable_tasks(self.online_task_ids) 
             episode_rollout = []
             generator = self._rollout_generator.generator(
@@ -225,6 +274,76 @@ class _EnvRunner(object):
                     self.stored_transitions.append((name, transition, eval))
                 # logging.warning(f'proc {name}, idx {proc_idx} finished adding to stored transitions') 
         env.shutdown()
+
+    def _iterate_all_vars(self, name: str,  eval: bool, proc_idx: int):
+        # use for eval env only 
+        self._name = name
+        self._agent = copy.deepcopy(self._agent)
+        proc_device = self._device_list[int(proc_idx % self._num_device)] if self._device_list is not None else None
+        self._agent.build(training=False, device=proc_device)
+        logging.info('%s: Launching env.' % name)
+        np.random.seed()
+
+        logging.info('Agent information:')
+        logging.info(self._agent)
+
+        env = self._eval_env
+        env.eval = True 
+        env.launch()
+         
+        while True:
+            if self._kill_signal.value:
+                env.shutdown()
+                break 
+            self._load_next_unevaled()
+            ckpt = int(self._agent.get_checkpoint())
+            assert ckpt not in self.stored_ckpt_eval_transitions.keys(), 'There should be no transitions stored for this ckpt'
+            # with self.write_lock:
+            #     self.stored_ckpt_eval_transitions[ckpt] = []
+            #     self.agent_ckpt_eval_summaries[ckpt] = []
+            
+            all_episode_rollout = []
+            all_agent_summaries = []
+            for (task_id, var_id) in self._all_task_var_ids:
+                
+                # print('process', name, 'evaluating task + var:', task_id, var_id)
+                env.set_task_variation(task_id, var_id)
+                for ep in range(self._eval_episodes):
+                    logging.debug('%s: Starting episode %d.' % (name, ep))
+                    episode_rollout = []
+                    
+                    generator = self._rollout_generator.generator(
+                        self._step_signal, env, self._agent,
+                        self._episode_length, self._timesteps, True, 
+                        swap_task=False)
+                    try:
+                        for replay_transition in generator:  
+                            for s in self._agent.act_summaries():
+                                s.step = ckpt
+                                all_agent_summaries.append(s)
+                                # logging.warning(f'proc {name}, idx {proc_idx} finished writing agent summaries')
+                            assert replay_transition.info[CHECKPT] == ckpt, 'Checkpoint mismatch between transition in rollout and agent loaded point'
+                            episode_rollout.append(replay_transition)
+                            # print(replay_transition.info, env._task._variation_number )
+                    except StopIteration as e:
+                        continue
+                    except Exception as e:
+                        env.shutdown()
+                        raise e
+
+                    for transition in episode_rollout:
+                        all_episode_rollout.append((name, transition)) 
+
+            with self.write_lock: 
+                self.stored_ckpt_eval_transitions[ckpt] = all_episode_rollout  
+                self.agent_ckpt_eval_summaries[ckpt] = all_agent_summaries
+                self._finished_eval_checkpoint.append(ckpt)
+             
+            logging.debug(f'Checkpoint {ckpt} finished evaluating, all {len(self.stored_ckpt_eval_transitions[ckpt])} transitions and agent act summaries stored ') 
+        env.shutdown()
+
+        
+
 
     def kill(self):
         self._kill_signal.value = True

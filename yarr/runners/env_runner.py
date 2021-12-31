@@ -45,6 +45,8 @@ class EnvRunner(object):
                  share_buffer_across_tasks: bool = True, 
                  task_var_to_replay_idx: dict = {},
                  eval_only: bool = False, 
+                 iter_eval: bool = False, 
+                 eval_episodes: int = 2
                  ):
         self._train_env = train_env
         self._eval_env = eval_env if eval_env else train_env
@@ -79,11 +81,20 @@ class EnvRunner(object):
         self._device_list = device_list 
         self._share_buffer_across_tasks = share_buffer_across_tasks 
         self._agent_summaries = []
+        self._agent_ckpt_summaries = dict() 
         self.task_var_to_replay_idx = task_var_to_replay_idx
+        self._all_task_var_ids = []
+        for task_id, var_dicts in task_var_to_replay_idx.items():
+            self._all_task_var_ids.extend([(task_id, var_id) for var_id in var_dicts.keys() ])
+        logging.info(f'Counted a total of {len(self._all_task_var_ids)} variations')
+        
         self._eval_only = eval_only
         if eval_only:
             logging.info('Warning! Eval only, set number of training env to 0')
             self._train_envs = 0
+
+        self._iter_eval = iter_eval
+        self._eval_episodes = eval_episodes
 
     @property   
     def device_list(self):
@@ -155,24 +166,51 @@ class EnvRunner(object):
                     self._stat_accumulator.step(transition, eval)
             self._internal_env_runner.stored_transitions[:] = []  # Clear list
             # logging.info('Finished EnvRunner calling internal runner write lock')
+            
+            for ckpt_step, all_transitions in self._internal_env_runner.stored_ckpt_eval_transitions.items():
+                if ckpt_step in self._internal_env_runner._finished_eval_checkpoint: 
+                    for name, transition in all_transitions:
+                        self._new_transitions['eval_envs'] += 1
+                        self._total_transitions['eval_envs'] += 1
+                        if transition.terminal:
+                            self._total_episodes['eval_envs'] += 1
+
+                    if self._stat_accumulator is not None:
+                        self._stat_accumulator.step_all_transitions_from_ckpt(all_transitions, ckpt_step)
+                    self._internal_env_runner.stored_ckpt_eval_transitions.pop(ckpt_step) # Clear 
+                    self._agent_ckpt_summaries[ckpt_step] = self._internal_env_runner.agent_ckpt_eval_summaries.pop(ckpt_step)
+
+                    logging.debug('Done poping ckpt {} eval transitions to accumulator, main EnvRunner stored {} agent summaries, remaining ckpts: '.format(
+                        ckpt_step, len(self._agent_ckpt_summaries[ckpt_step])), 
+                        self._internal_env_runner.stored_ckpt_eval_transitions.keys() )
 
         return new_transitions
  
+    def try_log_ckpt_eval(self):
+        """Attempts to log the earliest avaliable ckpt that finished eval"""
+        ckpt, summs = self._stat_accumulator.pop_ckpt_eval() 
+        if ckpt > -1:
+            assert ckpt in self._agent_ckpt_summaries.keys(), 'Checkpoint has env transitions all stepped in accumulator but no agent summaries found' 
+            summs += self._agent_ckpt_summaries.pop(ckpt)
+        return ckpt, summs 
 
     def _run(self, save_load_lock):
         self._internal_env_runner = _EnvRunner(
-            self._train_env, self._eval_env, self._agent, self._timesteps, self._train_envs,
-            self._eval_envs, self._episodes, self._episode_length, self._kill_signal,
-            self._step_signal, self._rollout_generator, save_load_lock,
-            self.current_replay_ratio, self.target_replay_ratio, 
-            weightsdir=self._weightsdir, 
+            train_env=self._train_env, eval_env=self._eval_env, agent=self._agent, timesteps=self._timesteps, train_envs=self._train_envs,
+            eval_envs=self._eval_envs, episodes=self._episodes, episode_length=self._episode_length, kill_signal=self._kill_signal,
+            step_signal=self._step_signal, rollout_generator=self._rollout_generator, save_load_lock=save_load_lock,
+            current_replay_ratio=self.current_replay_ratio, 
+            target_replay_ratio=self.target_replay_ratio, 
             online_task_ids=self.online_task_ids,
-            device_list=(self.device_list if len(self.device_list) >= 1 else None)
+            weightsdir=self._weightsdir, 
+            device_list=(self.device_list if len(self.device_list) >= 1 else None),
+            all_task_var_ids=self._all_task_var_ids,
+            eval_episodes=self._eval_episodes,
             )
         #training_envs = self._internal_env_runner.spin_up_envs('train_env', self._train_envs, False)
         #eval_envs = self._internal_env_runner.spin_up_envs('eval_env', self._eval_envs, True)
         #envs = training_envs + eval_envs
-        envs = self._internal_env_runner.spinup_train_and_eval(self._train_envs, self._eval_envs, 'env')
+        envs = self._internal_env_runner.spinup_train_and_eval(self._train_envs, self._eval_envs, 'env', iter_eval=self._iter_eval)
         no_transitions = {env.name: 0 for env in envs}
         while True:
             for p in envs:

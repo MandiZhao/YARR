@@ -1,4 +1,4 @@
-from multiprocessing import Lock
+from multiprocessing import Lock, Manager
 from typing import List
 
 import numpy as np
@@ -8,6 +8,7 @@ from yarr.utils.transition import ReplayTransition
 from collections import deque 
 TASK_ID = 'task_id'
 VAR_ID = 'variation_id'
+CHECKPT = 'agent_checkpoint'
 
 class StatAccumulator(object):
 
@@ -202,7 +203,7 @@ class SimpleMultiVariationAccumulator(StatAccumulator):
     
         if transition.info[self._task_id_key] == self._task_id:
             var_str = f'{self._task_name}_{transition.info[self._var_id_key]}'
-            # print('\n', var_str) 
+            # print('stepping', var_str) 
             with self._lock:
                 self._transitions[var_str] += 1
                 self._all_var_returns[var_str].update(transition.reward)
@@ -219,8 +220,6 @@ class SimpleMultiVariationAccumulator(StatAccumulator):
         stat_keys = ["mean"] if self._mean_only else \
             ["min", "max", "mean", "median", "std"]
         returns, lengths = self._all_var_returns[_var], self._all_var_lengths[_var]
-    
-        returns, lengths = self._all_var_returns[_var], self._all_var_lengths[_var]
         for stat_key in stat_keys:
             sum_name = f"{self._prefix}/{self._task_name}/{_var}/return/{stat_key}"
             sums.append(
@@ -235,23 +234,10 @@ class SimpleMultiVariationAccumulator(StatAccumulator):
             f"{self._prefix}/{self._task_name}/{_var}/num_transitions", self._transitions[_var] ))
          
         return sums
-
-    # def pop(self) -> List[Summary]:
-    #     data = []
-    #     for k, v in self._all_var_returns.items():
-    #         if len(v) == v._maxlen :
-    #             data.extend(self._get(k))
-    #             # self._reset_data() NOTE(mandi): shouldn't need to bc of deque
-  
-    #     data.append(
-    #         ScalarSummary(f"{self._prefix}/{self._task_name}/total_transitions", \
-    #             sum(list(self._transitions.values()) ) ) )
-    #     data.extend(self._summaries)
-    #     self._summaries.clear()
-    #     return data
+ 
     def pop(self) -> List[Summary]:
         data = []
-        for k, v in self._all_var_returns.items():
+        for k, v in self._all_var_returns.items(): 
             if len(v) != v._maxlen :
                 return []  # doesn't log if any variation doesn't have enough value saved
         
@@ -293,26 +279,14 @@ class SimpleMultiVariationAccumulator(StatAccumulator):
         self._summaries.clear()
         return data
 
-    def peak(self) -> List[Summary]:
-        # data = []
-        # for k, v in self._all_var_returns.items():
-        #     if len(v) == v._maxlen :
-        #         data.extend(self._get(k))
-        #         # self._reset_data() NOTE(mandi): shouldn't need to bc of deque
-  
-        # data.append(
-        #     ScalarSummary(f"{self._prefix}/{self._task_name}/total_transitions", \
-        #         sum(list(self._transitions.values()) ) ) )
-        # data.extend(self._summaries)
-        # return data 
+    def peak(self) -> List[Summary]: 
         return self.pop()
     
     def reset(self):
         # self._transitions = {_var: 0 for _var in self._task_vars}
         # self._reset_data()
         return 
-
-
+ 
 class MultiTaskAccumulator(StatAccumulator):
 
     def __init__(self, task_names,
@@ -384,14 +358,55 @@ class MultiTaskAccumulatorV2(StatAccumulator):
         self._train_accs_mean = _SimpleAccumulator(
             '%s_summary/all_tasks' % train_prefix, eval_video_fps,
             mean_only=mean_only)
+        self._ckpt_lock = Lock()
+        manager = Manager()
+        self._ready_to_log = manager.dict()
+        self.task_names, self.task_vars = task_names, tasks_vars
+        self.eval_video_fps = eval_video_fps
+        self.mean_only = mean_only 
+        self.max_len = max_len
+        self.log_all_vars = log_all_vars
 
     def step(self, transition: ReplayTransition, eval: bool):
-        replay_index = transition.info["task_id"]
+        replay_index = transition.info[TASK_ID]
         if eval:
             self._eval_accs[replay_index].step(transition, eval)
         else:
             self._train_accs[replay_index].step(transition, eval)
             self._train_accs_mean.step(transition, eval)
+
+    def step_all_transitions_from_ckpt(self, all_transitions: List, ckpt: int) -> None:
+        assert ckpt not in self._ready_to_log.keys(), "Cannot log ckpt %d, already logged" % ckpt
+        this_step_accs = [] 
+        for i, (task_name, its_vars) in enumerate( zip(self.task_names, self.task_vars) ):
+            this_step_accs.append(
+                SimpleMultiVariationAccumulator(
+                    'eval', task_name, i, its_vars, self.eval_video_fps, self.mean_only, self.max_len, TASK_ID, VAR_ID, self.log_all_vars)
+            )
+        
+        for proc_name, transition in all_transitions:
+            assert transition.info[CHECKPT] == ckpt, f'Step mismatch between replay transition {transition.info[CHECKPT]} and checkpoint {ckpt}'
+            replay_index = transition.info[TASK_ID]
+            # print('stepping w transition var, terminal:', transition.info[VAR_ID], transition.terminal)
+            this_step_accs[replay_index].step(transition, True)
+        
+        with self._ckpt_lock:
+            combined = []
+            for acc in this_step_accs:
+                data = acc.pop() 
+                combined.extend(data)
+                
+            self._ready_to_log[ckpt] = combined
+        
+        return  
+
+    def pop_ckpt_eval(self) -> List[Summary]:
+        """ Pops the earliest ckpt eval summary """
+        if len(self._ready_to_log.keys()) == 0:
+            return -1, []
+        with self._ckpt_lock:
+            earliest_ckpt = min(self._ready_to_log.keys())
+            return earliest_ckpt, self._ready_to_log.pop(earliest_ckpt)
 
     def pop(self) -> List[Summary]:
         combined = self._train_accs_mean.pop()

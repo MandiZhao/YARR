@@ -3,9 +3,11 @@ from typing import Any, List
 
 
 class Summary(object):
-    def __init__(self, name: str, value: Any):
+    def __init__(self, name: str, value: Any, step: int = -1):
+        """Use _step_ to track checkpoint saved steps, use for evaluation"""
         self.name = name
         self.value = value
+        self.step = step  
 
 
 class ScalarSummary(Summary):

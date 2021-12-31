@@ -13,6 +13,7 @@ CONTEXT_KEY = 'demo_sample'
 DEMO_KEY='front_rgb'
 TASK_ID='task_id'
 VAR_ID='variation_id'
+CHECKPT='agent_checkpoint'
 NOISY_VECS={
     0: np.array([ 0.11925248, -0.14782887, -0.40366346, -0.27328304, -0.42401568,
         0.33704594,  0.41446234,  0.48869492,  0.10952299,  0.10154486]),
@@ -120,18 +121,19 @@ class RolloutGeneratorWithContext(object):
         # assert task_name in data['name'], f"Expects {task_name} to be the prefix of {data['name']}"
         # demo_sample = data.get(self._sample_key, None)
         # assert demo_sample is not None, f"Key {self._sample_key} was not found in sampled data"
-        return demo_sample
+        return demo_sample 
 
     
     def generator(self, step_signal: Value, env: Env, agent: Agent,
-                  episode_length: int, timesteps: int, eval: bool): 
-        obs     = env.reset()
+                  episode_length: int, timesteps: int, eval: bool, swap_task: bool = True): 
+        obs     = env.reset(swap_task=swap_task) 
         task_id = env._active_task_id
         variation_id = env._active_variation_id
         task_name = env._active_task_name
         buf_id = self._task_var_to_replay_idx[task_id][variation_id]
         #print('mt rollout gen:', task_id, variation_id, task_name)
         agent.reset()
+        checkpoint = agent.get_checkpoint()
         obs_history = {k: [np.array(v, dtype=self._get_type(v))] * timesteps for k, v in obs.items()}
         demo_samples = None
         one_hot_vec = F.one_hot(  torch.tensor(int(buf_id)), num_classes=self._num_task_vars)
@@ -190,6 +192,7 @@ class RolloutGeneratorWithContext(object):
                 TASK_ID: task_id, 
                 VAR_ID: variation_id, #'task_name': env._active_task_name
                 'demo': False,
+                CHECKPT: checkpoint
                 })
 
             replay_transition = ReplayTransition(

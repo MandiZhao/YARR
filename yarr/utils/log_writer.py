@@ -10,6 +10,7 @@ from yarr.agents.agent import ScalarSummary, HistogramSummary, ImageSummary, \
 from torch.utils.tensorboard import SummaryWriter
 import wandb 
 
+
 class LogWriter(object):
 
     def __init__(self,
@@ -39,9 +40,7 @@ class LogWriter(object):
 
     def add_scalar(self, i, name, value):
         if self._tensorboard_logging:
-            self._tf_writer.add_scalar(name, value, i)
-        # if self._wandb_logging:
-        #     wandb.log({name: value, name+'_step': i})
+            self._tf_writer.add_scalar(name, value, i) 
         if self._csv_logging:
             if len(self._row_data) == 0:
                 self._row_data['step'] = i
@@ -67,6 +66,29 @@ class LogWriter(object):
                 raise e
         if self._wandb_logging:
             wandb.log(wandb_log)
+
+    def log_ckpt_eval(self, i, summaries):
+        """Log all summaries in a checkpoint evaluation at once"""
+        wandb_log = {'Checkpoint step': i}
+        for summary in summaries:
+            try:
+                if isinstance(summary, ScalarSummary): 
+                    wandb_log.update( {summary.name: summary.value} )
+                elif isinstance(summary, ImageSummary):
+                    v = (summary.value if summary.value.ndim == 3 else
+                             summary.value[0]) 
+                    wandb_log.update( {summary.name: wandb.Image(v)} )
+                elif isinstance(summary, VideoSummary):
+                    v = (summary.value if summary.value.ndim == 5 else
+                             np.array([summary.value])) 
+                    wandb_log.update( {summary.name: wandb.Video(v, fps=summary.fps)} )
+            except Exception as e:
+                logging.error('Error on summary: %s' % summary.name)
+                raise e
+        if self._wandb_logging:
+            wandb.log(wandb_log)
+         
+
 
     def add_summaries(self, i, summaries):
         wandb_log = {'Train step': i}

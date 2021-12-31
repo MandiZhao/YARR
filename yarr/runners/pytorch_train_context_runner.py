@@ -402,6 +402,10 @@ class PyTorchTrainContextRunner(TrainRunner):
             return np.mean(sums)
         return sums 
 
+    def _get_min_add_counts(self):
+        return np.min([
+            r.replay_buffer.add_count for r in self._wrapped_buffer])
+
     def start(self, resume_dir: str = None):
 
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -424,17 +428,18 @@ class PyTorchTrainContextRunner(TrainRunner):
         logging.info('Need %d samples before training. Currently have %s in each buffer, which adds to %d in total, setting init_replay_size to: %s' %
                 (self._transitions_before_train, str(self._get_add_counts()), self._get_sum_add_counts(), init_replay_size)     )
         
+        single_buffer_bsize = self._wrapped_buffer[0].replay_buffer.batch_size
         # Kick off the environments
         if not self._offline:
             self._env_runner.start(self._save_load_lock)
         if not self._eval_only:
-            while (self._get_sum_add_counts() < self._transitions_before_train):
+            while (self._get_sum_add_counts() < self._transitions_before_train or self._get_min_add_counts() < single_buffer_bsize):
                 time.sleep(1)
                 logging.info('Waiting for %d total samples before training. Currently have %s.' %
                     (self._transitions_before_train, str(self._get_sum_add_counts())))
 
         datasets = [r.dataset() for r in self._wrapped_buffer]
-        single_buffer_bsize = self._wrapped_buffer[0].replay_buffer.batch_size
+        
         assert np.all(
             np.equal([r.replay_buffer.batch_size for r in self._wrapped_buffer], single_buffer_bsize)), 'The replay buffers should all have the same bath size'
         data_iter = [iter(d) for d in datasets] 

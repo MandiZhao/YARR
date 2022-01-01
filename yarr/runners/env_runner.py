@@ -49,7 +49,7 @@ class EnvRunner(object):
                  eval_episodes: int = 2
                  ):
         self._train_env = train_env
-        self._eval_env = eval_env if eval_env else train_env
+        self._eval_env = eval_env if eval_env else deepcopy(train_env)
         self._agent = agent
         self._train_envs = num_train_envs
         self._eval_envs = num_eval_envs

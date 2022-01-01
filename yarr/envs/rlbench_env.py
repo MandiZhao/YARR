@@ -174,8 +174,7 @@ class MultiTaskRLBenchEnv(MultiTaskEnv):
                  use_variations: List[int] = [], # optionally only sample from a subset of vars here 
                  ):
         super(MultiTaskRLBenchEnv, self).__init__()
-        self._task_classes = task_classes
-        self._created_tasks = [None for _ in task_classes] # avoid re-creating tasks
+        self._task_classes = task_classes 
         self._task_names = task_names 
         self._observation_config = observation_config
         self._channels_last = channels_last
@@ -198,9 +197,9 @@ class MultiTaskRLBenchEnv(MultiTaskEnv):
     def _set_new_task(self):
         self._active_task_id = int(np.random.choice(self._use_tasks))
         task = self._task_classes[self._active_task_id]
-        
-        self._task = self._rlbench_env.get_task(task)
-            #self._created_tasks[self._active_task_id] = self._task 
+        if self._task is not None: 
+            self._task._pyrep.stop() # !!!! fix the growing gpu memory issue
+        self._task = self._rlbench_env.get_task(task) 
         if len(self._use_variations) > 0:
             _var = int(np.random.choice(self._use_variations))
         else:

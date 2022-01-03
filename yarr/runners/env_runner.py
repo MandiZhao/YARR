@@ -175,15 +175,17 @@ class EnvRunner(object):
                         if transition.terminal:
                             self._total_episodes['eval_envs'] += 1
                     
-                    self._agent_ckpt_summaries[ckpt_step] = self._internal_env_runner.agent_ckpt_eval_summaries.pop(ckpt_step)
+                    self._agent_ckpt_summaries[ckpt_step] = self._internal_env_runner.agent_ckpt_eval_summaries.pop(ckpt_step, [])
                     if self._stat_accumulator is not None:
                         self._stat_accumulator.step_all_transitions_from_ckpt(all_transitions, ckpt_step)
-                    self._internal_env_runner.stored_ckpt_eval_transitions.pop(ckpt_step) # Clear 
+                    self._internal_env_runner.stored_ckpt_eval_transitions.pop(ckpt_step, []) # Clear 
                     
 
                     logging.debug('Done poping ckpt {} eval transitions to accumulator, main EnvRunner stored {} agent summaries, remaining ckpts: '.format(
-                        ckpt_step, len(self._agent_ckpt_summaries[ckpt_step])), 
-                        self._internal_env_runner.stored_ckpt_eval_transitions.keys() )
+                        ckpt_step, 
+                        len(self._agent_ckpt_summaries.get(ckpt_step, []))), 
+                        self._internal_env_runner.stored_ckpt_eval_transitions.keys() 
+                        )
 
         return new_transitions
  
@@ -192,7 +194,7 @@ class EnvRunner(object):
         ckpt, summs = self._stat_accumulator.pop_ckpt_eval() 
         if ckpt > -1:
             assert ckpt in self._agent_ckpt_summaries.keys(), 'Checkpoint has env transitions all stepped in accumulator but no agent summaries found' 
-            summs += self._agent_ckpt_summaries.pop(ckpt)
+            summs += self._agent_ckpt_summaries.pop(ckpt, [])
         return ckpt, summs 
 
     def _run(self, save_load_lock):

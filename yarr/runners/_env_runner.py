@@ -300,8 +300,7 @@ class _EnvRunner(object):
             assert ckpt not in self.stored_ckpt_eval_transitions.keys(), 'There should be no transitions stored for this ckpt'
             # with self.write_lock:
             #     self.stored_ckpt_eval_transitions[ckpt] = []
-            #     self.agent_ckpt_eval_summaries[ckpt] = []
-            
+            #     self.agent_ckpt_eval_summaries[ckpt] = [] 
             all_episode_rollout = []
             all_agent_summaries = []
             for (task_id, var_id) in self._all_task_var_ids:
@@ -318,6 +317,9 @@ class _EnvRunner(object):
                         swap_task=False)
                     try:
                         for replay_transition in generator:  
+                            if self._kill_signal.value:
+                                env.shutdown()
+                                return 
                             for s in self._agent.act_summaries():
                                 s.step = ckpt
                                 all_agent_summaries.append(s)

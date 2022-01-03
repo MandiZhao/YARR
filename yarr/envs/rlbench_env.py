@@ -219,6 +219,8 @@ class MultiTaskRLBenchEnv(MultiTaskEnv):
     def set_task_variation(self, task_id, var_id):
         self._active_task_id = task_id 
         task = self._task_classes[self._active_task_id]
+        if self._task is not None: 
+            self._task._pyrep.stop() 
         self._task = self._rlbench_env.get_task(task)
         assert var_id < self._task.variation_count(), f'Variation id {var_id} is not avaliable for task {self._task_names[task_id]}'
         self._task.set_variation(var_id)

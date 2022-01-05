@@ -88,6 +88,7 @@ class _EnvRunner(object):
         self._device_list, self._num_device = (None, 1) if device_list is None else (
             [torch.device("cuda:%d" % int(idx)) for idx in device_list], len(device_list))
         print('Internal EnvRunner is using GPUs:', self._device_list)
+        self.online_buff_id = Value('i', -1)
          
 
     def restart_process(self, name: str):
@@ -187,11 +188,13 @@ class _EnvRunner(object):
                         self._agent.load_weights(d)
                     logging.info('Agent %s: Loaded weights: %s for evaluation' % (self._name, d)) 
                     with self.write_lock:
-                        self._loaded_eval_checkpoint.append(w)
-                    
+                        self._loaded_eval_checkpoint.append(w) 
                     break 
             logging.info('Waiting for weights to become available.') 
-            time.sleep(1) 
+            if self._kill_signal.value:
+                logging.info('Stop looking for new saved checkpoints before shutting down')
+                return 
+            time.sleep(1)  
 
     def _get_type(self, x):
         if x.dtype == np.float64:
@@ -224,10 +227,15 @@ class _EnvRunner(object):
             if not eval and len(self.online_task_ids) > 0:
                 logging.debug(f"env runner setting online tasks: {self.online_task_ids}")
                 env.set_avaliable_tasks(self.online_task_ids) 
+            if not eval and self.online_buff_id.value > -1:
+                task_id, var_id = self._all_task_var_ids[self.online_buff_id.value] 
+                env.set_task_variation(task_id, var_id)
             episode_rollout = []
             generator = self._rollout_generator.generator(
                 self._step_signal, env, self._agent,
-                self._episode_length, self._timesteps, eval)
+                self._episode_length, self._timesteps, eval, 
+                swap_task=(False if not eval and self.online_buff_id.value > -1 else True)
+                )
             try:
                 for replay_transition in generator:
                     slept = 0
@@ -275,7 +283,7 @@ class _EnvRunner(object):
                 # logging.warning(f'proc {name}, idx {proc_idx} finished adding to stored transitions') 
         env.shutdown()
 
-    def _iterate_all_vars(self, name: str,  eval: bool, proc_idx: int):
+    def _iterate_all_vars(self, name: str,  eval: bool, proc_idx: int): 
         # use for eval env only 
         self._name = name
         self._agent = copy.deepcopy(self._agent)
@@ -286,17 +294,22 @@ class _EnvRunner(object):
 
         logging.info('Agent information:')
         logging.info(self._agent)
-
+        ckpt = None 
         env = self._eval_env
         env.eval = True 
         env.launch()
          
         while True:
             if self._kill_signal.value:
+                logging.info('shutting down before loading new ckpt')                
                 env.shutdown()
-                break 
+                return 
             self._load_next_unevaled()
-            ckpt = int(self._agent.get_checkpoint())
+            if self._kill_signal.value and ckpt is not None and ckpt == int(self._agent.get_checkpoint()) :
+                logging.info('No new checkpoint got loaded, shutting down')  
+                env.shutdown()
+                return 
+            ckpt = int(self._agent.get_checkpoint()) 
             assert ckpt not in self.stored_ckpt_eval_transitions.keys(), 'There should be no transitions stored for this ckpt'
             # with self.write_lock:
             #     self.stored_ckpt_eval_transitions[ckpt] = []
@@ -304,22 +317,18 @@ class _EnvRunner(object):
             all_episode_rollout = []
             all_agent_summaries = []
             for (task_id, var_id) in self._all_task_var_ids:
-                
-                # print('process', name, 'evaluating task + var:', task_id, var_id)
+                if self._kill_signal.value: 
+                    logging.info('[Finishing evaluation before full shutdown] process', name, 'evaluating task + var:', task_id, var_id)
                 env.set_task_variation(task_id, var_id)
                 for ep in range(self._eval_episodes):
-                    logging.debug('%s: Starting episode %d.' % (name, ep))
+                    # print('%s: Starting episode %d.' % (name, ep))
                     episode_rollout = []
-                    
                     generator = self._rollout_generator.generator(
                         self._step_signal, env, self._agent,
                         self._episode_length, self._timesteps, True, 
                         swap_task=False)
                     try:
-                        for replay_transition in generator:  
-                            if self._kill_signal.value:
-                                env.shutdown()
-                                return 
+                        for replay_transition in generator:    
                             for s in self._agent.act_summaries():
                                 s.step = ckpt
                                 all_agent_summaries.append(s)
@@ -340,8 +349,13 @@ class _EnvRunner(object):
                 self.stored_ckpt_eval_transitions[ckpt] = all_episode_rollout  
                 self.agent_ckpt_eval_summaries[ckpt] = all_agent_summaries
                 self._finished_eval_checkpoint.append(ckpt)
+
+            if self._kill_signal.value:
+                print('shutting down after current ckpt is done evaluating')
+                env.shutdown()
+                return 
              
-            logging.debug(f'Checkpoint {ckpt} finished evaluating, all {len(self.stored_ckpt_eval_transitions[ckpt])} transitions and agent act summaries stored ') 
+            print(f'Checkpoint {ckpt} finished evaluating, all {len(self.stored_ckpt_eval_transitions[ckpt])} transitions and agent act summaries stored ') 
         env.shutdown()
 
         

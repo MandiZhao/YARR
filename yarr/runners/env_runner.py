@@ -46,7 +46,10 @@ class EnvRunner(object):
                  task_var_to_replay_idx: dict = {},
                  eval_only: bool = False, 
                  iter_eval: bool = False, 
-                 eval_episodes: int = 2
+                 eval_episodes: int = 2,
+                 log_freq: int = 100,
+                 target_replay_ratio: float = 30.0,
+
                  ):
         self._train_env = train_env
         self._eval_env = eval_env if eval_env else deepcopy(train_env)
@@ -72,12 +75,13 @@ class EnvRunner(object):
         self._step_signal = Value('i', -1)
         self._new_transitions = {'train_envs': 0, 'eval_envs': 0}
         self._total_transitions = {'train_envs': 0, 'eval_envs': 0}
-        self._total_episodes = {'train_envs': 0, 'eval_envs': 0}
-        self.log_freq = 1000  # Will get overridden later
+        self._total_episodes = {'train_envs': 0, 'eval_envs': 0} 
         self.target_replay_ratio = None  # Will get overridden later
         self.current_replay_ratio = Value('f', -1) 
         self.online_task_ids = Manager().list()
-        
+        self.buffer_add_counts = Manager().list()
+        self.log_freq = log_freq
+        self.target_replay_ratio = target_replay_ratio
         self._device_list = device_list 
         self._share_buffer_across_tasks = share_buffer_across_tasks 
         self._agent_summaries = []
@@ -124,6 +128,7 @@ class EnvRunner(object):
     def _update(self):
         # Move the stored transitions to the replay and accumulate statistics.
         new_transitions = collections.defaultdict(int)
+        
         with self._internal_env_runner.write_lock:
             # logging.info('EnvRunner calling internal runner write lock')
             self._agent_summaries = list(
@@ -186,6 +191,12 @@ class EnvRunner(object):
                         len(self._agent_ckpt_summaries.get(ckpt_step, []))), 
                         self._internal_env_runner.stored_ckpt_eval_transitions.keys() 
                         )
+
+            self.buffer_add_counts[:] = [int(r.add_count) for r in self._train_replay_buffer]
+            self._internal_env_runner.online_buff_id.value = -1 
+            if self._train_replay_buffer[0].batch_size > min(self.buffer_add_counts):
+                buff_id = np.argmin(self.buffer_add_counts) 
+                self._internal_env_runner.online_buff_id.value = buff_id
 
         return new_transitions
  

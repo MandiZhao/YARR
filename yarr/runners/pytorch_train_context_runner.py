@@ -23,6 +23,7 @@ from yarr.runners.env_runner import EnvRunner
 from yarr.runners.train_runner import TrainRunner
 from yarr.utils.log_writer import LogWriter
 from yarr.utils.stat_accumulator import StatAccumulator
+from yarr.utils.multitask_rollout_generator import NOISY_VECS, NOISY_VECS_20
 from yarr.agents.agent import ScalarSummary, HistogramSummary, ImageSummary, \
     VideoSummary 
 from arm.models.slowfast  import TempResNet 
@@ -37,78 +38,14 @@ TASK_ID='task_id'
 VAR_ID='variation_id'
 DEMO_KEY='front_rgb' # what to look for in the demo dataset
 ONE_HOT_KEY='var_one_hot'
-WAIT_WARN=200
-NOISY_VECS={
-    0: np.array([ 0.11925248, -0.14782887, -0.40366346, -0.27328304, -0.42401568,
-        0.33704594,  0.41446234,  0.48869492,  0.10952299,  0.10154486]),
-    1: np.array([ 0.22487479,  0.32561551, -0.22771661, -0.04798632, -0.43327144,
-        0.35466405,  0.03087024,  0.00246092, -0.3818759 , -0.57354108]),
-    2: np.array([-0.38734519, -0.31740813, -0.36871456, -0.14102713, -0.17094035,
-        0.32675689, -0.21493319,  0.28633581,  0.24948758, -0.51667931]),
-    3: np.array([ 0.18540121, -0.36820533,  0.18308575, -0.01892064, -0.33780466,
-        0.26526095,  0.53540062,  0.2748794 ,  0.24834015,  0.43337298]),
-    4: np.array([ 0.2148131 , -0.25162006, -0.30730072,  0.50525774,  0.45081893,
-       -0.49889678, -0.21654777, -0.16233489,  0.11915335, -0.03528155]), 
-    5: np.array([-0.40118621,  0.41678064,  0.28864454, -0.53277101, -0.12082425,
-        0.4367015 , -0.27647954, -0.05299221,  0.0547752 ,  0.10308621]),
-    6: np.array([-0.02411682, -0.11224046,  0.03227223,  0.11851931, -0.40225017,
-        0.46261037, -0.428421  , -0.47695132, -0.20697166, -0.37690079]),
-    7: np.array([-0.32398346,  0.18281037,  0.08709628, -0.44767024,  0.40639542,
-        0.23711536,  0.40272094,  0.17245336, -0.18032934,  0.45584731]),
-    8: np.array([ 0.25014659,  0.25815153, -0.09170533, -0.33635687,  0.50909926,
-        0.57739529,  0.22484016, -0.1269459 , -0.11276835,  0.278004  ]),
-    9: np.array([-0.18245398, -0.22966254,  0.4778035 , -0.38738104, -0.39714424,
-        0.32174066,  0.17275781,  0.32849225, -0.13299022, -0.34485649])
-}
-NOISY_VECS_20={
-    0: np.array([ 0.1241162 , -0.05574423, -0.05697403, -0.17554671,  0.19445307,
-       -0.35501783,  0.20034263,  0.01890455, -0.23385913,  0.04746695,
-       -0.32926621,  0.21168267,  0.26189741, -0.16748583, -0.2208488 ,
-       -0.342916  , -0.34976264, -0.15677703, -0.1557932 , -0.31419748]),
-    1: np.array([ 0.22598381,  0.21672723, -0.26101817,  0.02933299,  0.11744386,
-        0.23375912,  0.05646577,  0.34363911,  0.0057265 ,  0.25028927,
-        0.30709834, -0.3051258 , -0.08236424,  0.03895639, -0.360537  ,
-        0.16915585, -0.028283  ,  0.36571162,  0.26494207,  0.14672129]),
-    2: np.array([-0.37600589,  0.2670904 ,  0.10579851,  0.23620909, -0.16698364,
-       -0.29006283,  0.11340786,  0.04280838, -0.30325462, -0.0377304 ,
-       -0.30273325, -0.32708192,  0.05640233,  0.29489397,  0.19917879,
-       -0.00207009, -0.24073129,  0.33234255,  0.05778171, -0.00117703]),
-    3: np.array([ 0.03727079,  0.29780001,  0.20769243,  0.24645232, -0.28714051,
-       -0.01010143, -0.01264227,  0.36535678, -0.2685693 ,  0.35804983,
-        0.38971603, -0.03167043,  0.11421525,  0.13804317, -0.13793809,
-        0.05940818, -0.10723408, -0.23744542,  0.28166427, -0.18647186]),
-    4: np.array([ 0.27144968,  0.15943166,  0.27796568, -0.05611184,  0.18805349,
-       -0.33940988,  0.28816161, -0.17185427,  0.35198909, -0.15380081,
-        0.19273471, -0.15989264,  0.14688273,  0.06881908,  0.34219501,
-       -0.05920143,  0.22709361,  0.27779321,  0.06714273, -0.2586969 ]),
-    5: np.array([ 0.34249773,  0.06390457, -0.13743363,  0.38286517,  0.1551175 ,
-       -0.18142844,  0.16433129, -0.18968841, -0.06506652, -0.20942131,
-        0.36155665,  0.11065518, -0.32124776,  0.22070202, -0.09678616,
-        0.38956303, -0.16748455,  0.10717698,  0.21597242, -0.05381803]),
-    6: np.array([ 0.23345451, -0.11720424,  0.27668721,  0.30169692, -0.25731543,
-       -0.33149893,  0.30340655,  0.25515817, -0.25552404,  0.04616548,
-        0.1204444 ,  0.12879893, -0.31810688,  0.13517071, -0.05832574,
-       -0.11645197, -0.30803733, -0.22775973, -0.14239043,  0.17011443]),
-    7: np.array([-0.18991155,  0.35840933, -0.33248923,  0.24374355,  0.30816331,
-       -0.3521371 , -0.24067894, -0.22872415,  0.12738857,  0.01691464,
-       -0.131966  ,  0.18401505, -0.17695116, -0.06359497,  0.03967199,
-       -0.14142925,  0.26656281,  0.20365368,  0.07496383,  0.30567518]),
-    8: np.array([ 0.11485718, -0.31645387,  0.31761709, -0.35623829, -0.00555676,
-       -0.08726689,  0.01714125, -0.06494054, -0.26445658,  0.18859192,
-       -0.01895199, -0.3232076 ,  0.12715038, -0.17051961,  0.37937627,
-        0.26442016,  0.14463371,  0.17563099, -0.2184145 ,  0.27899077]),
-    9: np.array([-0.05557781, -0.34685366,  0.33585084,  0.11439378, -0.27021591,
-        0.05677191, -0.30173682,  0.34768466,  0.04299883, -0.19551378,
-        0.04949826,  0.0218476 , -0.0590866 ,  0.14459832, -0.26284077,
-        0.35558838, -0.3428256 , -0.02309729, -0.26602248, -0.10388196])
-}
+WAIT_WARN=1000
+TRAN_WAIT_WARN=500 
 class PyTorchTrainContextRunner(TrainRunner):
 
     def __init__(self,
                  agent: Agent,
                  env_runner: EnvRunner,
-                 wrapped_replay_buffer: Union[
-                     PyTorchReplayBuffer, List[PyTorchReplayBuffer]],
+                 wrapped_replay_buffer: Union[PyTorchReplayBuffer, List[PyTorchReplayBuffer]],
                  train_device: torch.device, 
                  stat_accumulator: Union[StatAccumulator, None] = None,
                  iterations: int = int(1e6),
@@ -144,18 +81,14 @@ class PyTorchTrainContextRunner(TrainRunner):
             stat_accumulator,
             iterations, logdir, log_freq, transitions_before_train, weightsdir,
             save_freq)
-
-        env_runner.log_freq = log_freq
-        env_runner.target_replay_ratio = replay_ratio
         self._wrapped_buffer = wrapped_replay_buffer if isinstance(
-            wrapped_replay_buffer, list) else [wrapped_replay_buffer]
-        self._num_total_buffers = len(self._wrapped_buffer)
-        self._buffers_per_batch = buffers_per_batch if buffers_per_batch > 0 else self._num_total_buffers
+            wrapped_replay_buffer, list) else [wrapped_replay_buffer] 
+        self._buffers_per_batch = buffers_per_batch if buffers_per_batch > 0 else len(self._wrapped_buffer)
         self._num_tasks_per_batch = num_tasks_per_batch
-        self._buffer_sample_rates = [1.0 / self._num_total_buffers for _ in range(len(wrapped_replay_buffer))]
+        self._buffer_sample_rates = [1.0 / len(self._wrapped_buffer) for _ in range(len(wrapped_replay_buffer))]
         self._per_buffer_error = [1.0 for  _ in range(len(wrapped_replay_buffer))]
         self._update_buffer_prio = update_buffer_prio
-        logging.info(f'Created a list of prioties for {self._num_total_buffers} buffers, each batch samples from {self._buffers_per_batch} of them, \
+        logging.info(f'Created a list of prioties for {len(self._wrapped_buffer)} buffers, each batch samples from {self._buffers_per_batch} of them, \
             Updating priorities for choosing buffers? **{self._update_buffer_prio}**')
  
         self._train_device = train_device
@@ -228,8 +161,33 @@ class PyTorchTrainContextRunner(TrainRunner):
     
     def _sample_replay(self, data_iter):
         # New: sample fixed number of different tasks
+        sampled_buf_ids = []
         if len(data_iter) == 1:
             sampled_buf_ids = [0]
+        elif self.dev_cfg.batch_sample_mode == 'equal-task':
+            buffs_per_task = int(self._buffers_per_batch / len(self.task_ids)) # 5 
+            for task_id in self.task_ids:
+                sampled_buf_ids.extend(
+                    list(
+                        np.random.choice(
+                            list(self.task_var_to_replay_idx[task_id].values()),
+                            size=buffs_per_task,
+                            replace=(True if len(self.task_var_to_replay_idx[task_id].values()) < buffs_per_task else False),
+                        )
+                    )
+                )
+        elif self.dev_cfg.batch_sample_mode == 'equal-var':
+            assert len(self.task_ids) == 3, 'Only 3 tasks supported for equal-var'
+            for task_id in self.task_ids:
+                sampled_buf_ids.extend(
+                    list(
+                        np.random.choice(
+                            list(self.task_var_to_replay_idx[task_id].values()),
+                            size=(1 if len(self.task_var_to_replay_idx[task_id].values()) == 1 else 13),
+                            replace=True,
+                        )
+                    )
+                )     
         elif self._num_tasks_per_batch > 0:
             sampled_task_ids = np.random.choice(
                 a=self.task_ids,
@@ -429,13 +387,17 @@ class PyTorchTrainContextRunner(TrainRunner):
                 (self._transitions_before_train, str(self._get_add_counts()), self._get_sum_add_counts(), init_replay_size)     )
         
         single_buffer_bsize = self._wrapped_buffer[0].replay_buffer.batch_size
+         
         # Kick off the environments
         if not self._offline:
             self._env_runner.start(self._save_load_lock)
         if not self._eval_only:
+            transition_wait = 0
             while (self._get_sum_add_counts() < self._transitions_before_train or self._get_min_add_counts() < single_buffer_bsize):
-                time.sleep(1)
-                logging.info('Waiting for %d total samples before training. Currently have %s.' %
+                time.sleep(1) 
+                transition_wait += 1
+                if transition_wait % TRAN_WAIT_WARN == 0:
+                    logging.info('Waiting for %d total samples before training. Currently have %s.' %
                     (self._transitions_before_train, str(self._get_sum_add_counts())))
 
         datasets = [r.dataset() for r in self._wrapped_buffer]
@@ -497,7 +459,7 @@ class PyTorchTrainContextRunner(TrainRunner):
         for i in range(self._iterations):
             self._env_runner.set_step(i)
 
-            log_iteration = i % self._log_freq == 0  
+            log_iteration = i % self._log_freq == 0 or i == self._iterations - 1  
 
             if log_iteration:
                 process.cpu_percent(interval=None)
@@ -583,7 +545,7 @@ class PyTorchTrainContextRunner(TrainRunner):
                     buffer_summaries = defaultdict(list) # clear 
                 self._writer.add_summaries(i, agent_summaries + env_summaries + buffer_histograms)
 
-                # DEBUG! disable all buffer logging 
+                # disable all buffer logging for now 
                 # for r_i, wrapped_buffer in enumerate(self._wrapped_buffer):
                 #     self._writer.add_scalar(
                 #         i, 'replay%d/add_count' % r_i,
@@ -623,16 +585,18 @@ class PyTorchTrainContextRunner(TrainRunner):
             
             self._writer.end_iteration()
  
-            if i % self._save_freq == 0 and self._weightsdir is not None and not self._eval_only:
+            if (i % self._save_freq == 0 or i == self._iterations-1) and self._weightsdir is not None and not self._eval_only:
                 self._save_model(i)
 
 
-        if self._writer is not None:
-            self._writer.close()
+        
 
         logging.info('Stopping envs ...')
         self._env_runner.stop()
         [r.replay_buffer.shutdown() for r in self._wrapped_buffer]
+        logging.info('Stopping log writer')
+        if self._writer is not None:
+            self._writer.close()
 
     def evaluate(self, resume_dir: str = None):
 

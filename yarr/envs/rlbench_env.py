@@ -198,7 +198,7 @@ class MultiTaskRLBenchEnv(MultiTaskEnv):
         self._prev_task_id = self._active_task_id 
         self._active_task_id = int(np.random.choice(self._use_tasks))
         task = self._task_classes[self._active_task_id]
-        if self._task is not None and self._prev_task_id != self._active_task_id: 
+        if self._task is not None: # and self._prev_task_id != self._active_task_id: 
             self._task._pyrep.stop() # !!!! fix the growing gpu memory issue 
         self._task = self._rlbench_env.get_task(task)  
         if len(self._use_variations) > 0:
@@ -221,7 +221,7 @@ class MultiTaskRLBenchEnv(MultiTaskEnv):
         self._prev_task_id = self._active_task_id
         self._active_task_id = task_id 
         task = self._task_classes[self._active_task_id]
-        if self._task is not None and self._prev_task_id != self._active_task_id: 
+        if self._task is not None: # and self._prev_task_id != self._active_task_id: 
             self._task._pyrep.stop() 
         self._task = self._rlbench_env.get_task(task)
         assert var_id < self._task.variation_count(), f'Variation id {var_id} is not avaliable for task {self._task_names[task_id]}'

@@ -13,7 +13,7 @@ from rlbench.backend.task import Task
 from yarr.envs.env import Env, MultiTaskEnv
 from yarr.utils.observation_type import ObservationElement
 from yarr.utils.transition import Transition
-
+from pyrep.objects import VisionSensor
 
 ROBOT_STATE_KEYS = ['joint_velocities', 'joint_positions', 'joint_forces',
                         'gripper_open', 'gripper_pose',
@@ -183,11 +183,11 @@ class MultiTaskRLBenchEnv(MultiTaskEnv):
             dataset_root=dataset_root, headless=headless)
         self._task = None
         
-        self._swap_task_every = swap_task_every
-        self._rlbench_env
+        self._swap_task_every = swap_task_every 
         self._episodes_this_task = 0
 
         self._active_task_id = -1 
+        self._prev_task_id = -1 
         self._active_task_name = None 
         self._active_variation_id = -1 
         self._use_tasks = [i for i in range(len(self._task_classes))] # may be reset later to prioritize sampling certain tasks
@@ -195,11 +195,12 @@ class MultiTaskRLBenchEnv(MultiTaskEnv):
         
         
     def _set_new_task(self):
+        self._prev_task_id = self._active_task_id 
         self._active_task_id = int(np.random.choice(self._use_tasks))
         task = self._task_classes[self._active_task_id]
-        if self._task is not None: 
-            self._task._pyrep.stop() # !!!! fix the growing gpu memory issue
-        self._task = self._rlbench_env.get_task(task) 
+        if self._task is not None and self._prev_task_id != self._active_task_id: 
+            self._task._pyrep.stop() # !!!! fix the growing gpu memory issue 
+        self._task = self._rlbench_env.get_task(task)  
         if len(self._use_variations) > 0:
             _var = int(np.random.choice(self._use_variations))
         else:
@@ -217,9 +218,10 @@ class MultiTaskRLBenchEnv(MultiTaskEnv):
         self._choose_from = task_ids
 
     def set_task_variation(self, task_id, var_id):
+        self._prev_task_id = self._active_task_id
         self._active_task_id = task_id 
         task = self._task_classes[self._active_task_id]
-        if self._task is not None: 
+        if self._task is not None and self._prev_task_id != self._active_task_id: 
             self._task._pyrep.stop() 
         self._task = self._rlbench_env.get_task(task)
         assert var_id < self._task.variation_count(), f'Variation id {var_id} is not avaliable for task {self._task_names[task_id]}'

@@ -135,6 +135,7 @@ class PyTorchTrainContextRunner(TrainRunner):
 
         self.switch_online_tasks = switch_online_tasks
         self.task_var_to_replay_idx = task_var_to_replay_idx
+        self.total_vars = sum([len(v) for v in task_var_to_replay_idx.values()])
         self.task_ids = [int(k) for k in task_var_to_replay_idx.keys()]
         assert self._num_tasks_per_batch <= len(self.task_ids), 'Cannot sample more tasks than avaliable'
         self._task_sample_rates = [1/len(self.task_ids) for _ in self.task_ids]
@@ -238,11 +239,16 @@ class PyTorchTrainContextRunner(TrainRunner):
             if not self._no_context:
                 task_ids, variation_ids = one_buf[TASK_ID], one_buf[VAR_ID]
                 task, var = task_ids[0], variation_ids[0]
-                assert torch.all(task_ids == task) and torch.all(variation_ids == var), f'For now, assume each buffer contains only 1 vairation from 1 task'
+                # assert torch.all(task_ids == task) and torch.all(variation_ids == var), f'For now, assume each buffer contains only 1 vairation from 1 task'
+                if not (torch.all(task_ids == task) or torch.all(variation_ids == var)):
+                    assert self._one_hot, 'only supports onehot for single buffer for now'
                 var_ids_tensor = variation_ids.clone().detach().to(torch.int64)
                 if self._one_hot: 
                     # demo_samples = F.one_hot(var_ids_tensor, num_classes=self._num_vars)
-                    demo_samples = F.one_hot(one_buf['buffer_id'], num_classes=len(data_iter))
+                    if len(data_iter) == 1:
+                        demo_samples = F.one_hot(var_ids_tensor, num_classes=self.total_vars)
+                    else:
+                        demo_samples = F.one_hot(one_buf['buffer_id'], num_classes=len(data_iter))
                     one_buf[CONTEXT_KEY] = demo_samples.clone().detach().to(torch.float32) 
                 elif self._noisy_one_hot: 
                     demo_samples = torch.stack( [
@@ -398,6 +404,9 @@ class PyTorchTrainContextRunner(TrainRunner):
                 transition_wait += 1
                 if transition_wait % TRAN_WAIT_WARN == 0:
                     logging.info('Waiting for %d total samples before training. Currently have %s.' %
+                    (self._transitions_before_train, str(self._get_sum_add_counts())))
+
+        logging.info('Done waiting for %d total samples before training. Currently have %s.' %
                     (self._transitions_before_train, str(self._get_sum_add_counts())))
 
         datasets = [r.dataset() for r in self._wrapped_buffer]

@@ -33,7 +33,7 @@ from arm.c2farm.context_agent import CONTEXT_KEY # the key context agent looks f
 from functools import partial 
 from einops import rearrange
 
-NUM_WEIGHTS_TO_KEEP = 10
+NUM_WEIGHTS_TO_KEEP = 101
 TASK_ID='task_id'
 VAR_ID='variation_id'
 DEMO_KEY='front_rgb' # what to look for in the demo dataset
@@ -583,25 +583,36 @@ class PyTorchTrainContextRunner(TrainRunner):
                     process.memory_info().rss * 1e-9)
                 self._writer.add_scalar(
                     i, 'monitoring/cpu_percent',
-                    process.cpu_percent(interval=None) / num_cpu)
-
+                    process.cpu_percent(interval=None) / num_cpu) 
+            
+            self._writer.end_iteration()
+ 
+            if (i % self._save_freq == 0 or i == self._iterations-1) and self._weightsdir is not None and not self._eval_only:
+                self._save_model(i)
+        
             if self._env_runner._iter_eval and self._writer is not None:
                 ckpt, summs = self._env_runner.try_log_ckpt_eval()
                 if ckpt > -1:
                     assert len(summs) != 0, 'Accumulator is empty!'
                     logging.info(f'Logging all {len(summs)} evaluation data from checkpoint step: {ckpt}')
                     self._writer.log_ckpt_eval(ckpt, summs)
-            
-            self._writer.end_iteration()
- 
-            if (i % self._save_freq == 0 or i == self._iterations-1) and self._weightsdir is not None and not self._eval_only:
-                self._save_model(i)
-
 
         
 
         logging.info('Stopping envs ...')
         self._env_runner.stop()
+        wait_env = 0
+        while len(self._env_runner._stat_accumulator._ready_to_log) > 0:
+            ckpt, summs = self._env_runner.try_log_ckpt_eval()
+            wait_env += 1
+            if ckpt > -1:
+                assert len(summs) != 0, 'Accumulator is empty!'
+                logging.info(f'Logging all {len(summs)} evaluation data from checkpoint step: {ckpt}')
+                self._writer.log_ckpt_eval(ckpt, summs)
+            print('Waiting for all envs to finish logging eval', ckpt )
+            if wait_env % WAIT_WARN == 0:
+                logging.info('Waiting for all envs to finish logging eval data for steps: %s' % wait_env)
+        
         [r.replay_buffer.shutdown() for r in self._wrapped_buffer]
         logging.info('Stopping log writer')
         if self._writer is not None:
@@ -638,14 +649,14 @@ class PyTorchTrainContextRunner(TrainRunner):
 
             num_episodes = self._env_runner._total_episodes.get('eval_envs', 0)
 
-        self._writer.end_iteration()
- 
-        if self._writer is not None:
-            self._writer.close()
+        
 
         logging.info('Stopping envs ...')
         self._env_runner.stop()
         [r.replay_buffer.shutdown() for r in self._wrapped_buffer]
+        if self._writer is not None:
+            self._writer.end_iteration()
+            self._writer.close()
 
     def validate_context(self, step):
         context_batch = next(self.ctxt_val_iter)

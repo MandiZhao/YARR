@@ -47,6 +47,7 @@ class _EnvRunner(object):
                  weightsdir: str = None,
                  device_list: List[int] = None, 
                  all_task_var_ids = None,
+                 final_checkpoint_step = 999,
                  ):
         self._train_env = train_env
         self._eval_env = eval_env
@@ -78,6 +79,8 @@ class _EnvRunner(object):
         self._agent_checkpoint = Value('i', -1)
         self._loaded_eval_checkpoint = manager.list()
         self._finished_eval_checkpoint = manager.list()
+        self.final_checkpoint_step = final_checkpoint_step
+        logging.info('Expected final checkpoint to be saved at step: {}'.format(self.final_checkpoint_step))
 
         self._save_load_lock = save_load_lock
         self._current_replay_ratio = current_replay_ratio
@@ -172,11 +175,10 @@ class _EnvRunner(object):
 
                 if len(weight_folders) > 0:
                     weight_folders = sorted(map(int, weight_folders))
-                    weight_folders = [w for w in weight_folders if w not in self._loaded_eval_checkpoint ]
-                    # load the next unevaluated checkpoint 
-                     
-                if len(weight_folders) > 0:
-                    w = weight_folders[0]  
+                    new_weight_folders = [w for w in weight_folders if w not in self._loaded_eval_checkpoint ]
+                    # load the next unevaluated checkpoint  
+                if len(new_weight_folders) > 0:
+                    w = new_weight_folders[0]  
                     self._agent_checkpoint.value = int(w)
                     d = os.path.join(self._weightsdir, str(w))
                     try:
@@ -186,14 +188,14 @@ class _EnvRunner(object):
                         logging.warning('_EnvRunner: agent hasnt finished writing.')
                         time.sleep(1)
                         self._agent.load_weights(d)
-                    logging.info('Agent %s: Loaded weights: %s for evaluation' % (self._name, d)) 
+                    print('Agent %s: Loaded weights: %s for evaluation' % (self._name, d)) 
                     with self.write_lock:
                         self._loaded_eval_checkpoint.append(w) 
-                    break 
+                    return False 
             logging.info('Waiting for weights to become available.') 
-            if self._kill_signal.value:
-                logging.info('Stop looking for new saved checkpoints before shutting down')
-                return 
+            if max(self._loaded_eval_checkpoint) == self.final_checkpoint_step:
+                print('Found %s final checkpoint, Stop looking for new saved checkpoints' % self._name)
+                return int(self._agent.get_checkpoint()) == -1
             time.sleep(1)  
 
     def _get_type(self, x):
@@ -300,15 +302,19 @@ class _EnvRunner(object):
         env.launch()
          
         while True:
-            if self._kill_signal.value:
-                logging.info('shutting down before loading new ckpt')                
+            # if self._kill_signal.value:
+            #     logging.info('shutting down before loading new ckpt')                
+            #     env.shutdown()
+            #     return 
+            shutdown = self._load_next_unevaled()
+            if shutdown:
+                print('Shutting down process %s since other threads are evaluating the last checkpoint' % name)
                 env.shutdown()
                 return 
-            self._load_next_unevaled()
-            if self._kill_signal.value and ckpt is not None and ckpt == int(self._agent.get_checkpoint()) :
-                logging.info('No new checkpoint got loaded, shutting down')  
-                env.shutdown()
-                return 
+            # if self._kill_signal.value and ckpt is not None and ckpt == int(self._agent.get_checkpoint()) :
+            #     logging.info('No new checkpoint got loaded, shutting down')  
+            #     env.shutdown()
+            #     return 
             ckpt = int(self._agent.get_checkpoint()) 
             assert ckpt not in self.stored_ckpt_eval_transitions.keys(), 'There should be no transitions stored for this ckpt'
             # with self.write_lock:
@@ -318,7 +324,7 @@ class _EnvRunner(object):
             all_agent_summaries = []
             for (task_id, var_id) in self._all_task_var_ids:
                 if self._kill_signal.value: 
-                    logging.info('[Finishing evaluation before full shutdown] process', name, 'evaluating task + var:', task_id, var_id)
+                    logging.info('Finishing evaluation before full shutdown process', name, 'evaluating task + var:', task_id, var_id)
                 env.set_task_variation(task_id, var_id)
                 for ep in range(self._eval_episodes):
                     # print('%s: Starting episode %d.' % (name, ep))
@@ -350,14 +356,16 @@ class _EnvRunner(object):
                 self.agent_ckpt_eval_summaries[ckpt] = all_agent_summaries
                 self._finished_eval_checkpoint.append(ckpt)
 
-            if self._kill_signal.value:
-                print('shutting down after current ckpt is done evaluating')
+            
+            print(f'Checkpoint {ckpt} finished evaluating, all {len(self.stored_ckpt_eval_transitions[ckpt])} transitions and agent act summaries stored ') 
+            if self._kill_signal.value and max(self._loaded_eval_checkpoint) == self.final_checkpoint_step:
+                while len(self.stored_ckpt_eval_transitions.get(ckpt, [])) > 0:
+                    time.sleep(1)
+                    print('Process %s waiting for all evaled transitions to be logged' % name)
+                print('Process %s shutting down after current ckpt is done evaluating' % name)
                 env.shutdown()
                 return 
-             
-            print(f'Checkpoint {ckpt} finished evaluating, all {len(self.stored_ckpt_eval_transitions[ckpt])} transitions and agent act summaries stored ') 
-        env.shutdown()
-
+          
         
 
 

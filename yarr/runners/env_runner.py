@@ -49,7 +49,7 @@ class EnvRunner(object):
                  eval_episodes: int = 2,
                  log_freq: int = 100,
                  target_replay_ratio: float = 30.0,
-
+                 final_checkpoint_step: int = 999,
                  ):
         self._train_env = train_env
         self._eval_env = eval_env if eval_env else deepcopy(train_env)
@@ -99,6 +99,7 @@ class EnvRunner(object):
 
         self._iter_eval = iter_eval
         self._eval_episodes = eval_episodes
+        self.final_checkpoint_step = final_checkpoint_step
 
     @property   
     def device_list(self):
@@ -220,6 +221,7 @@ class EnvRunner(object):
             device_list=(self.device_list if len(self.device_list) >= 1 else None),
             all_task_var_ids=self._all_task_var_ids,
             eval_episodes=self._eval_episodes,
+            final_checkpoint_step=self.final_checkpoint_step,
             )
         #training_envs = self._internal_env_runner.spin_up_envs('train_env', self._train_envs, False)
         #eval_envs = self._internal_env_runner.spin_up_envs('eval_env', self._eval_envs, True)
@@ -242,7 +244,7 @@ class EnvRunner(object):
                         p = self._internal_env_runner.restart_process(p.name)
                         envs.append(p)
 
-            if not self._kill_signal.value:
+            if not self._kill_signal.value or len(self._internal_env_runner.stored_ckpt_eval_transitions) > 0:
                 new_transitions = self._update()
                 for p in envs:
                     if new_transitions[p.name] == 0:

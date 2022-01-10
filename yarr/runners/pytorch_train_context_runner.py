@@ -160,6 +160,73 @@ class PyTorchTrainContextRunner(TrainRunner):
             if os.path.exists(prev_dir):
                 shutil.rmtree(prev_dir)
     
+    def _reptile_step(self, i, data_iter):
+        # only one task (but possible multiple buffers) within one batch
+        task_id = np.random.choice(
+            a=self.task_ids, size=1, replace=False)[0]
+        frac_done = i / self._iterations
+        for k in range(self.dev_cfg['reptile_k']):
+            buf_ids = list(np.random.choice(
+                list(self.task_var_to_replay_idx[task_id].values()),
+                size=self._buffers_per_batch,
+                replace=(True if len(self.task_var_to_replay_idx[task_id].values()) < self._buffers_per_batch else False),
+                ))
+            sampled_batch = self._sample_buffers(buf_ids, data_iter)
+            update_dict = self._agent.update_reptile_inner(i, sampled_batch, k)
+            priority = update_dict['priority']
+            indices = rearrange(sampled_batch['indices'], 'b k ... -> (b k) ... ')
+            sampled_buffer_ids = rearrange(sampled_batch['buffer_id'], 'b k ... -> (b k) ... ')
+            for buf_id in buf_ids:
+                buf_mask = sampled_buffer_ids == buf_id 
+                indices_ = torch.masked_select(indices, buf_mask)
+                priority_ = torch.masked_select(priority, buf_mask).cpu().detach().numpy() 
+                max_prio = self._wrapped_buffer[buf_id].replay_buffer.get_max_priority() # swap NaN with max priority 
+                priority_ = np.nan_to_num(priority_, copy=True, nan=max_prio)
+                self._wrapped_buffer[buf_id].replay_buffer.set_priority(
+                    indices_.cpu().detach().numpy(), priority_)
+                # not change self._buffer_sample_rates or task sample rates for now
+        
+        self._agent.update_reptile_outer(frac_done)
+
+    def _sample_buffers(self, sampled_buf_ids, data_iter):
+        sampled_batch = []
+        for j in sampled_buf_ids:
+            one_buf = next(data_iter[j]) 
+            one_buf['buffer_id'] = torch.tensor(
+                [j for _ in range(self._wrapped_buffer[j].replay_buffer.batch_size) ], dtype=torch.int64)
+            if not self._no_context:
+                task_ids, variation_ids = one_buf[TASK_ID], one_buf[VAR_ID]
+                task, var = task_ids[0], variation_ids[0]
+                # assert torch.all(task_ids == task) and torch.all(variation_ids == var), f'For now, assume each buffer contains only 1 vairation from 1 task'
+                if not (torch.all(task_ids == task) or torch.all(variation_ids == var)):
+                    assert self._one_hot, 'only supports onehot for single buffer for now'
+                var_ids_tensor = variation_ids.clone().detach().to(torch.int64)
+                if self._one_hot: 
+                    # demo_samples = F.one_hot(var_ids_tensor, num_classes=self._num_vars)
+                    if len(data_iter) == 1:
+                        demo_samples = F.one_hot(var_ids_tensor, num_classes=self.total_vars)
+                    else:
+                        demo_samples = F.one_hot(one_buf['buffer_id'], num_classes=len(data_iter))
+                    one_buf[CONTEXT_KEY] = demo_samples.clone().detach().to(torch.float32) 
+                elif self._noisy_one_hot: 
+                    demo_samples = torch.stack( [
+                        torch.tensor(NOISY_VECS[int(_id)]) for _id in variation_ids], 0).to(torch.float32)
+                    one_buf[CONTEXT_KEY] = demo_samples 
+                elif self.dev_cfg.get('noisy_dim_20', False):
+                    demo_samples = torch.stack([
+                            torch.tensor(NOISY_VECS_20[int(_id)]) for _id in variation_ids], 0).to(torch.float32)
+                    one_buf[CONTEXT_KEY] = demo_samples 
+                else:
+                    demo_samples = self._train_demo_dataset.sample_for_replay_no_match(task, var) # draw K independent samples 
+                    one_buf[CONTEXT_KEY] = torch.stack( [ d[DEMO_KEY] for d in demo_samples ], dim=0)
+                    one_buf[ONE_HOT_KEY] = F.one_hot(var_ids_tensor, num_classes=self._num_vars).detach().to(torch.float32) 
+            sampled_batch.append(one_buf)
+
+        result = {}
+        for key in sampled_batch[0]:
+            result[key] = torch.stack([d[key] for d in sampled_batch], 0) # shape (num_buffer, num_sample, ... 
+        return result
+        
     def _sample_replay(self, data_iter):
         # New: sample fixed number of different tasks
         sampled_buf_ids = []
@@ -216,10 +283,7 @@ class PyTorchTrainContextRunner(TrainRunner):
                 )
             sampled_buf_ids.extend(
                 [np.random.choice(
-                    list(self.task_var_to_replay_idx[task_id].values()), size=1)[0] for task_id in other_task_ids ])
-            
-
-            # print('sampled task ids:', sampled_task_ids, sampled_buf_ids)
+                    list(self.task_var_to_replay_idx[task_id].values()), size=1)[0] for task_id in other_task_ids ]) 
         else:
             sampled_buf_ids = np.random.choice(
                 a=range(len(data_iter)), 
@@ -231,50 +295,7 @@ class PyTorchTrainContextRunner(TrainRunner):
             # np.random.choice(range(len(datasets)), self._buffers_per_batch, replace=False)
             # print('SAMPLED IDS', sampled_buf_ids)
  
-        sampled_batch = []
-        for j in sampled_buf_ids:
-            one_buf = next(data_iter[j]) 
-            one_buf['buffer_id'] = torch.tensor(
-                [j for _ in range(self._wrapped_buffer[j].replay_buffer.batch_size) ], dtype=torch.int64)
-            if not self._no_context:
-                task_ids, variation_ids = one_buf[TASK_ID], one_buf[VAR_ID]
-                task, var = task_ids[0], variation_ids[0]
-                # assert torch.all(task_ids == task) and torch.all(variation_ids == var), f'For now, assume each buffer contains only 1 vairation from 1 task'
-                if not (torch.all(task_ids == task) or torch.all(variation_ids == var)):
-                    assert self._one_hot, 'only supports onehot for single buffer for now'
-                var_ids_tensor = variation_ids.clone().detach().to(torch.int64)
-                if self._one_hot: 
-                    # demo_samples = F.one_hot(var_ids_tensor, num_classes=self._num_vars)
-                    if len(data_iter) == 1:
-                        demo_samples = F.one_hot(var_ids_tensor, num_classes=self.total_vars)
-                    else:
-                        demo_samples = F.one_hot(one_buf['buffer_id'], num_classes=len(data_iter))
-                    one_buf[CONTEXT_KEY] = demo_samples.clone().detach().to(torch.float32) 
-                elif self._noisy_one_hot: 
-                    demo_samples = torch.stack( [
-                        torch.tensor(NOISY_VECS[int(_id)]) for _id in variation_ids], 0).to(torch.float32)
-                    one_buf[CONTEXT_KEY] = demo_samples 
-                elif self.dev_cfg.get('noisy_dim_20', False):
-                    demo_samples = torch.stack([
-                            torch.tensor(NOISY_VECS_20[int(_id)]) for _id in variation_ids], 0).to(torch.float32)
-                    one_buf[CONTEXT_KEY] = demo_samples 
-                else:
-                    # demo_samples = self._train_demo_dataset.sample_for_replay(task_ids, variation_ids) # -> this matches every single variation to a context video (B,K,...) -> (B,N,T,3,128,128)
-                    #TODO(1014): change here to no match, action samples either use single or randomly sample from context samples
-                    demo_samples = self._train_demo_dataset.sample_for_replay_no_match(task, var) # draw K independent samples 
-                    one_buf[CONTEXT_KEY] = torch.stack( [ d[DEMO_KEY] for d in demo_samples ], dim=0)
-                    # print(f'task {task} var {var}, context sample: ', one_buf[CONTEXT_KEY].shape)
-                    #print(one_buf[CONTEXT_KEY].shape) # should be (num_sample, video_len, 3, 128, 128) 
-                    one_buf[ONE_HOT_KEY] = F.one_hot(var_ids_tensor, num_classes=self._num_vars).detach().to(torch.float32) 
-            sampled_batch.append(one_buf)
-
-        result = {}
-        for key in sampled_batch[0]:
-            result[key] = torch.stack([d[key] for d in sampled_batch], 0) # shape (num_buffer, num_sample, ...
-            # result[key] = torch.cat([d[key] for d in sampled_batch], 0)
-            # print('context runner:', sampled_batch[0][key].shape, result[key].shape )
-        sampled_batch = result
-        
+        sampled_batch = self._sample_buffers(sampled_buf_ids, data_iter)
         return sampled_batch, sampled_buf_ids 
 
     def _step(self, i, sampled_batch, buffer_ids):
@@ -287,30 +308,23 @@ class PyTorchTrainContextRunner(TrainRunner):
         indices = rearrange(sampled_batch['indices'], 'b k ... -> (b k) ... ')
         # print('context runner: returned priorities', priority.shape)
         sampled_buffer_ids = rearrange(sampled_batch['buffer_id'], 'b k ... -> (b k) ... ')
-        new_buff_prio = []
         for buf_id in buffer_ids:
             buf_mask = sampled_buffer_ids == buf_id 
             indices_ = torch.masked_select(indices, buf_mask)
             priority_ = torch.masked_select(priority, buf_mask).cpu().detach().numpy() 
             max_prio = self._wrapped_buffer[buf_id].replay_buffer.get_max_priority() # swap NaN with max priority 
             priority_ = np.nan_to_num(priority_, copy=True, nan=max_prio)
-            
             self._wrapped_buffer[buf_id].replay_buffer.set_priority(
                 indices_.cpu().detach().numpy(), 
                 priority_)
             
             if len(buffer_ids) >= 1 and self._update_buffer_prio: 
                 self._per_buffer_error[buf_id] = self._wrapped_buffer[buf_id].replay_buffer.get_average_priority()  
-                # self._per_buffer_error[buf_id] = (1 - alpha) * self._per_buffer_error[buf_id] + alpha * buffer_prio[0].cpu().detach().item()
-        
-        # if i % 20 == 0:
-        #     print(f'Buffer prio avg: {[self._wrapped_buffer[buf_id].replay_buffer.get_average_priority() for buf_id in range(10)]}')
-
+                 
         if self._update_buffer_prio:
             sum_error = sum(self._per_buffer_error)
             self._buffer_sample_rates = [ e/sum_error for e in self._per_buffer_error]
-             
-            # print('updated buffer sample rates:', self._buffer_sample_rates) 
+              
         per_task_errors = dict()
         for task_id, v in self.task_var_to_replay_idx.items():
             per_task_errors[task_id] = np.mean([
@@ -320,31 +334,14 @@ class PyTorchTrainContextRunner(TrainRunner):
         sum_error = sum([pair[1] for pair in per_task_errors])
         self._task_sample_rates = [ e/sum_error for e in [pair[1] for pair in per_task_errors]]
 
-        if self.switch_online_tasks > 0:
-            
+        if self.switch_online_tasks > 0: 
             self.online_task_ids = list(np.random.choice(
                 a=range(len(per_task_errors)), 
                 size=self.switch_online_tasks,
                 replace=False, 
                 p=self._task_sample_rates
                 ))
-        # prio_key = 'priority' 
-        # priority = update_dict[prio_key].cpu().detach().numpy() if isinstance(update_dict[prio_key], torch.Tensor) \
-        #     else np.numpy(update_dict[prio_key])
-        # indices  = sampled_batch['indices'].cpu().detach().numpy()
-        # acc_bs = 0
-        # for wb_idx, wb in enumerate(self._wrapped_buffer):
-        #     bs = wb.replay_buffer.batch_size
-        #     if 'priority' in update_dict:
-        #         indices_ = indices[:, wb_idx]
-        #         if len(priority.shape) > 1:
-        #             priority_ = priority[:, wb_idx]
-        #         else:
-        #             # legacy version
-        #             priority_ = priority[acc_bs: acc_bs + bs]
-        #         wb.replay_buffer.set_priority(indices_, priority_)
-        #     acc_bs += bs
-
+  
     def _signal_handler(self, sig, frame):
         if threading.current_thread().name != 'MainThread':
             return
@@ -479,6 +476,8 @@ class PyTorchTrainContextRunner(TrainRunner):
                 if self._eval_only:
                     return 100 
                 size_used = batch_times_buffers_per_sample * i
+                if self.dev_cfg.get('use_reptile', False):
+                    size_used *= self.dev_cfg['reptile_k']
                 # size_used = single_buffer_bsize * i
                 size_added = (
                     self._get_sum_add_counts(avg=True) - init_replay_size
@@ -510,17 +509,19 @@ class PyTorchTrainContextRunner(TrainRunner):
             sample_time, step_time = 0, 0
             
             if not self._eval_only:
-                sampled_batch, sampled_buf_ids = self._sample_replay(data_iter) 
-                sample_time = time.time() - t
-                # print('context runner buff ids:', result['buffer_id'])
- 
-                for key in [VAR_ID, TASK_ID, 'buffer_id']: 
-                    buffer_summaries[key].extend(
-                        list(sampled_batch[key].cpu().detach().numpy().flatten() ))
-                    # print(key, buffer_summaries[key])
-                t = time.time() 
-                self._step(i, sampled_batch, sampled_buf_ids)
-                step_time = time.time() - t
+                if self.dev_cfg.get('use_reptile', False):
+                    self._reptile_step(i, data_iter)
+                else:
+                    sampled_batch, sampled_buf_ids = self._sample_replay(data_iter) 
+                    sample_time = time.time() - t
+                    
+                    for key in [VAR_ID, TASK_ID, 'buffer_id']: 
+                        buffer_summaries[key].extend(
+                            list(sampled_batch[key].cpu().detach().numpy().flatten() ))
+                        # print(key, buffer_summaries[key])
+                    t = time.time() 
+                    self._step(i, sampled_batch, sampled_buf_ids)
+                    step_time = time.time() - t
    
             if (i > 0) and (not self._no_context) and (not self._one_hot) and (not self._noisy_one_hot) and (i % self._context_cfg.update_freq == 0):
                 if context_step % self._context_cfg.val_freq == 0:

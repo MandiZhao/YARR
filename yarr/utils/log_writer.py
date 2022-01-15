@@ -99,7 +99,7 @@ class LogWriter(object):
                     wandb_log.update( {summary.name: summary.value} )
                 
                 elif isinstance(summary, HistogramSummary): 
-                    if 'id' in summary.name: # other gradient stuff are skipped 
+                    if 'id' in summary.name or 'buffer' in summary.name: # other gradient stuff are skipped 
                         wandb_log.update( {summary.name: wandb.Histogram(summary.value)} )
 
                 elif isinstance(summary, ImageSummary):

@@ -61,6 +61,7 @@ class PyTorchTrainContextRunner(TrainRunner):
                  wandb_logging: bool = False,
                  buffers_per_batch: int = -1, # -1 = all
                  num_tasks_per_batch: int = 1, 
+                 num_vars_per_batch: int = 1, # split the N dimension! 
                  context_cfg: DictConfig = None,  # may want to more/less frequently update context
                  train_demo_dataset=None,
                  val_demo_dataset=None,
@@ -85,6 +86,7 @@ class PyTorchTrainContextRunner(TrainRunner):
             wrapped_replay_buffer, list) else [wrapped_replay_buffer] 
         self._buffers_per_batch = buffers_per_batch if buffers_per_batch > 0 else len(self._wrapped_buffer)
         self._num_tasks_per_batch = num_tasks_per_batch
+        self._num_vars_per_batch = num_vars_per_batch 
         self._buffer_sample_rates = [1.0 / len(self._wrapped_buffer) for _ in range(len(wrapped_replay_buffer))]
         self._per_buffer_error = [1.0 for  _ in range(len(wrapped_replay_buffer))]
         self._update_buffer_prio = update_buffer_prio
@@ -137,6 +139,9 @@ class PyTorchTrainContextRunner(TrainRunner):
         self.task_var_to_replay_idx = task_var_to_replay_idx
         self.total_vars = sum([len(v) for v in task_var_to_replay_idx.values()])
         self.task_ids = [int(k) for k in task_var_to_replay_idx.keys()]
+        self._task_reward_means = {
+            k: [0 for _ in v] for k, v in task_var_to_replay_idx.items()
+            }
         assert self._num_tasks_per_batch <= len(self.task_ids), 'Cannot sample more tasks than avaliable'
         self._task_sample_rates = [1/len(self.task_ids) for _ in self.task_ids]
         self.task_vars = [task_var_to_replay_idx[_id] for _id in self.task_ids]
@@ -192,11 +197,25 @@ class PyTorchTrainContextRunner(TrainRunner):
         sampled_batch = []
         for j in sampled_buf_ids:
             one_buf = next(data_iter[j]) 
+            task_ids, variation_ids = one_buf[TASK_ID], one_buf[VAR_ID]
+            task, var = task_ids[0], variation_ids[0]
+            rew_mean, rew_std = self._wrapped_buffer[j].replay_buffer.get_reward_stats()
+   
+            if self.dev_cfg.normalize_reward == 'by-buffer': 
+                one_buf['reward'] /= (rew_std + 1e-8)
+            if self.dev_cfg.normalize_reward == 'by-task':
+                self._task_reward_means[int(task)][int(var)] = rew_mean 
+                rew_std = np.std(self._task_reward_means[int(task)]) \
+                    if len(
+                        self._task_reward_means[int(task)]
+                        ) > 1 else rew_std 
+                one_buf['reward'] /= (rew_std + 1e-8)
+            
+            
             one_buf['buffer_id'] = torch.tensor(
                 [j for _ in range(self._wrapped_buffer[j].replay_buffer.batch_size) ], dtype=torch.int64)
-            if not self._no_context:
-                task_ids, variation_ids = one_buf[TASK_ID], one_buf[VAR_ID]
-                task, var = task_ids[0], variation_ids[0]
+            
+            if not self._no_context: 
                 # assert torch.all(task_ids == task) and torch.all(variation_ids == var), f'For now, assume each buffer contains only 1 vairation from 1 task'
                 if not (torch.all(task_ids == task) or torch.all(variation_ids == var)):
                     assert self._one_hot, 'only supports onehot for single buffer for now'
@@ -219,6 +238,7 @@ class PyTorchTrainContextRunner(TrainRunner):
                 else:
                     demo_samples = self._train_demo_dataset.sample_for_replay_no_match(task, var) # draw K independent samples 
                     one_buf[CONTEXT_KEY] = torch.stack( [ d[DEMO_KEY] for d in demo_samples ], dim=0)
+ 
                     one_buf[ONE_HOT_KEY] = F.one_hot(var_ids_tensor, num_classes=self._num_vars).detach().to(torch.float32) 
             sampled_batch.append(one_buf)
 
@@ -462,7 +482,7 @@ class PyTorchTrainContextRunner(TrainRunner):
         context_step = 0
         buffer_summaries = defaultdict(list)
         recent_online_task_ids = []
-        for i in range(self._iterations):
+        for i in range(0, self._iterations, (self.dev_cfg['reptile_k'] if self.dev_cfg.get('use_reptile', False) else 1)):
             self._env_runner.set_step(i)
 
             log_iteration = i % self._log_freq == 0 or i == self._iterations - 1  
@@ -517,7 +537,8 @@ class PyTorchTrainContextRunner(TrainRunner):
                     
                     for key in [VAR_ID, TASK_ID, 'buffer_id']: 
                         buffer_summaries[key].extend(
-                            list(sampled_batch[key].cpu().detach().numpy().flatten() ))
+                            list(sampled_batch[key].cpu().detach().numpy().flatten() )
+                            )
                         # print(key, buffer_summaries[key])
                     t = time.time() 
                     self._step(i, sampled_batch, sampled_buf_ids)
@@ -553,6 +574,15 @@ class PyTorchTrainContextRunner(TrainRunner):
                     buffer_histograms = [
                         HistogramSummary(key, val) for key, val in buffer_summaries.items()]
                     buffer_summaries = defaultdict(list) # clear 
+
+                buffer_mean_stds = [ list(buffer.replay_buffer.get_reward_stats()) for buffer in self._wrapped_buffer ]
+                buffer_histograms.extend([
+                    HistogramSummary(
+                        'buffer_reward_mean', [pair[0] for pair in buffer_mean_stds]),
+                    HistogramSummary(
+                        'buffer_reward_std', [pair[1] for pair in buffer_mean_stds]),
+                        ])
+                
                 self._writer.add_summaries(i, agent_summaries + env_summaries + buffer_histograms)
 
                 # disable all buffer logging for now 

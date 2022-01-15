@@ -25,6 +25,8 @@ class PrioritizedReplayBuffer(UniformReplayBuffer):
         """Initializes OutOfGraphPrioritizedReplayBuffer."""
         super(PrioritizedReplayBuffer, self).__init__(*args, **kwargs)
         self._sum_tree = SumTree(self._replay_capacity)
+        self._reward_mean = 0.0 
+        self._reward_std = 1.0 
 
     def get_storage_signature(self) -> Tuple[List[ReplayElement],
                                              List[ReplayElement]]:
@@ -74,6 +76,13 @@ class PrioritizedReplayBuffer(UniformReplayBuffer):
             self.invalid_range = invalid_range(
                 self.cursor(), self._replay_capacity, self._timesteps,
                 self._update_horizon)
+    
+    def get_reward_stats(self):
+        with self._lock:
+          cursor = self.cursor()
+          self._reward_mean = np.mean(self._store[REWARD][:cursor])
+          self._reward_std  = np.std(self._store[REWARD][:cursor])
+        return self._reward_mean, self._reward_std 
 
     def add_final(self, **kwargs):
         """Adds a transition to the replay memory.

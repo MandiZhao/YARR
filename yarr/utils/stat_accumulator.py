@@ -69,7 +69,9 @@ class DequeMetric(Metric):
         self._current = 0 
         self._maxlen = length 
  
-
+    def list(self):
+        return list(self._previous)
+        
 class _SimpleAccumulator(StatAccumulator):
 
     def __init__(self, prefix, eval_video_fps: int = 30,
@@ -252,6 +254,10 @@ class SimpleMultiVariationAccumulator(StatAccumulator):
             all_var_ret.append( returns.mean() )
             all_var_len.append( lengths.mean() )
             all_var_trans.append(self._transitions[_var])
+            if len(self._task_vars) == 1:
+                all_var_ret = returns.list() 
+                all_var_len = lengths.list()
+                all_var_trans = [self._transitions[_var]]
         
         for metric, values in zip(
             ["num_transitions", "return", "length"], [all_var_trans, all_var_ret, all_var_len]):
@@ -287,6 +293,7 @@ class SimpleMultiVariationAccumulator(StatAccumulator):
         # self._reset_data()
         return 
  
+
 class MultiTaskAccumulator(StatAccumulator):
 
     def __init__(self, task_names,

@@ -23,7 +23,7 @@ import torch
 from copy import deepcopy 
 TASK_ID='task_id'
 VAR_ID='variation_id'
-WAIT_TIME=400 # original version was 600 -> 5min
+WAIT_TIME=2000 # original version was 600 -> 5min
 
 class EnvRunner(object):
 

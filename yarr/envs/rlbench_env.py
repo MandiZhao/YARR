@@ -201,7 +201,7 @@ class MultiTaskRLBenchEnv(MultiTaskEnv):
         if self._task is not None: # and self._prev_task_id != self._active_task_id: 
             self._task._pyrep.stop() # !!!! fix the growing gpu memory issue 
         self._task = self._rlbench_env.get_task(task)  
-        if len(self._use_variations) > 0:
+        if len(self._use_variations) > 0 and self._task.variation_count() >= len(self._use_variations):
             _var = int(np.random.choice(self._use_variations))
         else:
             _var = int(np.random.choice(self._task.variation_count()))

@@ -81,7 +81,11 @@ class PrioritizedReplayBuffer(UniformReplayBuffer):
         with self._lock:
           cursor = self.cursor()
           self._reward_mean = np.mean(self._store[REWARD][:cursor])
+          if np.isinf(self._reward_mean) or np.isnan(self._reward_mean):
+            self._reward_mean = 0
           self._reward_std  = np.std(self._store[REWARD][:cursor])
+          if np.isinf(self._reward_std) or np.isnan(self._reward_std):
+            self._reward_std = 0
         return self._reward_mean, self._reward_std 
 
     def add_final(self, **kwargs):

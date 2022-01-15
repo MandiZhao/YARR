@@ -220,8 +220,7 @@ class PyTorchTrainContextRunner(TrainRunner):
                 if not (torch.all(task_ids == task) or torch.all(variation_ids == var)):
                     assert self._one_hot, 'only supports onehot for single buffer for now'
                 var_ids_tensor = variation_ids.clone().detach().to(torch.int64)
-                if self._one_hot: 
-                    # demo_samples = F.one_hot(var_ids_tensor, num_classes=self._num_vars)
+                if self._one_hot:  
                     if len(data_iter) == 1:
                         demo_samples = F.one_hot(var_ids_tensor, num_classes=self.total_vars)
                     else:
@@ -239,7 +238,7 @@ class PyTorchTrainContextRunner(TrainRunner):
                     demo_samples = self._train_demo_dataset.sample_for_replay_no_match(task, var) # draw K independent samples 
                     one_buf[CONTEXT_KEY] = torch.stack( [ d[DEMO_KEY] for d in demo_samples ], dim=0)
  
-                    one_buf[ONE_HOT_KEY] = F.one_hot(var_ids_tensor, num_classes=self._num_vars).detach().to(torch.float32) 
+                    one_buf[ONE_HOT_KEY] = F.one_hot(var_ids_tensor, num_classes=len(data_iter)).detach().to(torch.float32) 
             sampled_batch.append(one_buf)
 
         result = {}
@@ -446,13 +445,7 @@ class PyTorchTrainContextRunner(TrainRunner):
             if cstep % self._log_freq == 0:
                 agent_summaries = self._agent._context_agent.update_summaries() # only about context losses
                 self._writer.log_context_only(cstep, agent_summaries)
-        
-        # for j in range(10):
-        #     sampled_batch, sampled_buf_ids = self._sample_replay(data_iter) 
-        #     self._agent.visualize_batch(j, sampled_batch)
-
-        # raise ValueError
-
+         
         for cstep in range(self._context_cfg.pretrain_replay_steps): 
             sampled_batch, sampled_buf_ids = self._sample_replay(data_iter) 
             train_classifier = self.dev_cfg.get('classify', False)

@@ -231,7 +231,7 @@ class RolloutGeneratorWithContext(object):
                 replay_transition.final_observation = obs_tp1
 
             obs = dict(transition.observation)
-            episode_trans.append(transition)
+            episode_trans.append(replay_transition)
             # yield replay_transition
 
             if transition.info.get("needs_reset", transition.terminal):

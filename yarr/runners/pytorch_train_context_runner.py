@@ -237,13 +237,40 @@ class PyTorchTrainContextRunner(TrainRunner):
                 else:
                     demo_samples = self._train_demo_dataset.sample_for_replay_no_match(task, var) # draw K independent samples 
                     one_buf[CONTEXT_KEY] = torch.stack( [ d[DEMO_KEY] for d in demo_samples ], dim=0)
- 
                     one_buf[ONE_HOT_KEY] = F.one_hot(var_ids_tensor, num_classes=len(data_iter)).detach().to(torch.float32) 
             sampled_batch.append(one_buf)
+        # B, K 
+        if self.dev_cfg.augment_batch > 0: 
+            all_aug_batch = []
+            for i, one_buf in enumerate(sampled_batch): 
+                aug_batch = one_buf 
+                other_buf_id = np.random.choice(
+                    [j for j in range(len(sampled_batch)) if j != i],
+                    size=self.dev_cfg.augment_batch,
+                )
+                for buf_id in other_buf_id:
+                    idx = np.random.choice(self._wrapped_buffer[0].replay_buffer.batch_size, size=1)[0]
+                    for key in aug_batch.keys(): 
+                        
+                        new_sample = sampled_batch[buf_id][key][idx:idx+1]
+                        if key == 'reward':
+                            new_sample = torch.zeros_like(new_sample)
+                        if key == CONTEXT_KEY:
+                            # print(key, aug_batch[key].shape)
+                            # print(sampled_batch[buf_id][key].shape)
+                            if self._one_hot:
+                                new_sample = one_buf[key][0:1]
+                                aug_batch[key] = torch.cat([aug_batch[key], new_sample], dim=0)
+                        else:
+                            aug_batch[key] = torch.cat([aug_batch[key], new_sample], dim=0)
+                         
+                all_aug_batch.append(aug_batch)
+            sampled_batch = all_aug_batch 
 
         result = {}
         for key in sampled_batch[0]:
             result[key] = torch.stack([d[key] for d in sampled_batch], 0) # shape (num_buffer, num_sample, ... 
+          
         return result
         
     def _sample_replay(self, data_iter):
@@ -252,8 +279,12 @@ class PyTorchTrainContextRunner(TrainRunner):
         if len(data_iter) == 1:
             sampled_buf_ids = [0]
         elif self.dev_cfg.batch_sample_mode == 'equal-task':
-            buffs_per_task = int(self._buffers_per_batch / len(self.task_ids)) # 5 
-            for task_id in self.task_ids:
+            buffs_per_task = int(self._buffers_per_batch / self._num_tasks_per_batch) # 5 
+            sampled_task_ids = np.random.choice(
+                a=self.task_ids,
+                size=self._num_tasks_per_batch, 
+                replace=False)
+            for task_id in sampled_task_ids:
                 sampled_buf_ids.extend(
                     list(
                         np.random.choice(

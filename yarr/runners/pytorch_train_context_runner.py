@@ -198,12 +198,12 @@ class PyTorchTrainContextRunner(TrainRunner):
         for j in sampled_buf_ids:
             one_buf = next(data_iter[j]) 
             task_ids, variation_ids = one_buf[TASK_ID], one_buf[VAR_ID]
-            task, var = task_ids[0], variation_ids[0]
-            rew_mean, rew_std = self._wrapped_buffer[j].replay_buffer.get_reward_stats()
-   
+            task, var = task_ids[0], variation_ids[0] 
             if self.dev_cfg.normalize_reward == 'by-buffer': 
+                rew_mean, rew_std = self._wrapped_buffer[j].replay_buffer.get_reward_stats()
                 one_buf['reward'] /= (rew_std + 1e-8)
             if self.dev_cfg.normalize_reward == 'by-task':
+                rew_mean, rew_std = self._wrapped_buffer[j].replay_buffer.get_reward_stats()
                 self._task_reward_means[int(task)][int(var)] = rew_mean 
                 rew_std = np.std(self._task_reward_means[int(task)]) \
                     if len(
@@ -599,13 +599,14 @@ class PyTorchTrainContextRunner(TrainRunner):
                         HistogramSummary(key, val) for key, val in buffer_summaries.items()]
                     buffer_summaries = defaultdict(list) # clear 
 
-                buffer_mean_stds = [ list(buffer.replay_buffer.get_reward_stats()) for buffer in self._wrapped_buffer ]
-                buffer_histograms.extend([
-                    HistogramSummary(
-                        'buffer_reward_mean', [pair[0] for pair in buffer_mean_stds]),
-                    HistogramSummary(
-                        'buffer_reward_std', [pair[1] for pair in buffer_mean_stds]),
-                        ])
+                if self.dev_cfg.normalize_reward != '':
+                    buffer_mean_stds = [ list(buffer.replay_buffer.get_reward_stats()) for buffer in self._wrapped_buffer ]
+                    buffer_histograms.extend([
+                        HistogramSummary(
+                            'buffer_reward_mean', [pair[0] for pair in buffer_mean_stds]),
+                        HistogramSummary(
+                            'buffer_reward_std', [pair[1] for pair in buffer_mean_stds]),
+                            ])
                 
                 self._writer.add_summaries(i, agent_summaries + env_summaries + buffer_histograms)
 

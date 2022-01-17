@@ -92,7 +92,8 @@ class RolloutGeneratorWithContext(object):
         noisy_one_hot=False,
         num_task_vars=20,
         task_var_to_replay_idx=dict(),
-        dev_cfgs={},
+        dev_cfgs={}, 
+        augment_reward=False, 
         ):
         self._demo_dataset = demo_dataset 
         if demo_dataset is None:
@@ -103,6 +104,7 @@ class RolloutGeneratorWithContext(object):
         self._num_task_vars = num_task_vars 
         self._task_var_to_replay_idx = task_var_to_replay_idx
         self._dev_cfgs = dev_cfgs
+        self._augment_reward = augment_reward
 
     def _get_type(self, x):
         if x.dtype == np.float64:
@@ -143,8 +145,8 @@ class RolloutGeneratorWithContext(object):
             if self._dev_cfgs.get('noisy_dim_20', False):
                 noisy_one_hot = torch.tensor(NOISY_VECS_20[int(variation_id)]).clone().detach().to(torch.float32)
         one_hot_vec = one_hot_vec.clone().detach().to(torch.float32)
-        for step in range(episode_length):
-
+        episode_trans = [] 
+        for step in range(episode_length): 
             prepped_data = {k: np.array([v]) for k, v in obs_history.items()}
             prepped_data.update({
                 TASK_ID: task_id, 
@@ -229,7 +231,18 @@ class RolloutGeneratorWithContext(object):
                 replay_transition.final_observation = obs_tp1
 
             obs = dict(transition.observation)
-            yield replay_transition
+            episode_trans.append(transition)
+            # yield replay_transition
 
             if transition.info.get("needs_reset", transition.terminal):
-                return
+                # return
+                break 
+
+        if self._augment_reward and episode_trans[-1].reward > 0:
+            eps_len = len(episode_trans)
+            # print(f'Generated successfull traj of length {eps_len}, relabeling the reward')
+            for i, ep in enumerate(episode_trans):
+                ep.reward = max(i/eps_len, 0.1) * episode_trans[-1].reward
+
+        for ep in episode_trans: 
+            yield ep 

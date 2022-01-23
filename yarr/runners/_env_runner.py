@@ -327,7 +327,9 @@ class _EnvRunner(object):
                     generator = self._rollout_generator.generator(
                         self._step_signal, env, self._agent,
                         self._episode_length, self._timesteps, True, 
-                        swap_task=False)
+                        swap_task=False,
+                        context_batches=self._context_batches,
+                        )
                     try:
                         for replay_transition in generator:    
                             for s in self._agent.act_summaries():

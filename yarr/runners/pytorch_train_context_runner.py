@@ -39,7 +39,7 @@ VAR_ID='variation_id'
 DEMO_KEY='front_rgb' # what to look for in the demo dataset
 ONE_HOT_KEY='var_one_hot'
 WAIT_WARN=1000
-TRAN_WAIT_WARN=500 
+TRAN_WAIT_WARN=100 
 class PyTorchTrainContextRunner(TrainRunner):
 
     def __init__(self,
@@ -471,7 +471,7 @@ class PyTorchTrainContextRunner(TrainRunner):
         if not self._eval_only:
             transition_wait = 0
             while (self._get_sum_add_counts() < self._transitions_before_train or self._get_min_add_counts() < single_buffer_bsize):
-                time.sleep(1) 
+                time.sleep(1)  
                 transition_wait += 1
                 if transition_wait % TRAN_WAIT_WARN == 0:
                     logging.info('Waiting for %d total samples before training. Currently have %s.' %
@@ -479,9 +479,9 @@ class PyTorchTrainContextRunner(TrainRunner):
             transition_wait = 0
             if self.dev_cfg.use_pearl and self.dev_cfg.pearl_onpolicy_context:
                 # wait for on-policy context 
-                while np.any([r.replay_buffer.add_count for r in self._wrapped_buffer]) < self.dev_cfg.pearl_context_size:
-                    time.sleep(1)
-                transition_wait += 1
+                while min([r.replay_buffer.add_count - r.replay_buffer._demo_cursor for r in self._wrapped_buffer]) < self.dev_cfg.pearl_context_size:
+                    time.sleep(1) 
+                    transition_wait += 1
                 if transition_wait % TRAN_WAIT_WARN == 0:
                     logging.info('Waiting for %d enough on-policy samples to get context. Currently have %s.' %
                     (self._transitions_before_train, str(self._get_sum_add_counts())))

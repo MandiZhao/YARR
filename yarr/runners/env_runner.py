@@ -215,13 +215,12 @@ class EnvRunner(object):
             self.buffer_add_counts[:] = [int(r.add_count) for r in self._train_replay_buffer]
             demo_cursor = self._train_replay_buffer[0]._demo_cursor
             if demo_cursor > 0: # i.e. only on-line samples can be used for context
-                self.buffer_add_counts[:] = [int(r.add_count - demo_cursor) for r in self._train_replay_buffer]
-             
+                self.buffer_add_counts[:] = [int(r.add_count - r._demo_cursor) for r in self._train_replay_buffer]
             self._internal_env_runner.online_buff_id.value = -1 
             if self._train_replay_buffer[0].batch_size > min(self.buffer_add_counts):
                 buff_id = np.argmin(self.buffer_add_counts) 
                 self._internal_env_runner.online_buff_id.value = buff_id
-
+             
         return new_transitions
  
     def try_log_ckpt_eval(self):

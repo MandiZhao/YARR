@@ -47,7 +47,7 @@ class _EnvRunner(object):
                  weightsdir: str = None,
                  device_list: List[int] = None, 
                  all_task_var_ids = None,
-                 final_checkpoint_step = 999,
+                 final_checkpoint_step = 999, 
                  ):
         self._train_env = train_env
         self._eval_env = eval_env
@@ -69,6 +69,7 @@ class _EnvRunner(object):
         self.write_lock = manager.Lock()
         self.stored_transitions = manager.list()
         self.agent_summaries = manager.list()
+        self._context_batches = manager.list([{} for _ in range(len(all_task_var_ids))])
 
         self.stored_ckpt_eval_transitions = manager.dict() 
         self.agent_ckpt_eval_summaries = manager.dict()
@@ -92,15 +93,13 @@ class _EnvRunner(object):
             [torch.device("cuda:%d" % int(idx)) for idx in device_list], len(device_list))
         print('Internal EnvRunner is using GPUs:', self._device_list)
         self.online_buff_id = Value('i', -1)
-         
-
+  
     def restart_process(self, name: str):
         p = Process(target=self._run_env, args=self._p_args[name], name=name)
         p.start()
         return p
 
     def spin_up_envs(self, name: str, num_envs: int, eval: bool):
-
         ps = []
         for i in range(num_envs):
             n = name + str(i)
@@ -236,7 +235,8 @@ class _EnvRunner(object):
             generator = self._rollout_generator.generator(
                 self._step_signal, env, self._agent,
                 self._episode_length, self._timesteps, eval, 
-                swap_task=(False if not eval and self.online_buff_id.value > -1 else True)
+                swap_task=(False if not eval and self.online_buff_id.value > -1 else True),
+                context_batches=self._context_batches,
                 )
             try:
                 for replay_transition in generator:
@@ -261,7 +261,6 @@ class _EnvRunner(object):
                             'Env Runner process %s have been waiting for replay_ratio %f to be more than %f for %d seconds' %
                             (name, self._current_replay_ratio.value, self._target_replay_ratio, slept))
                             
-
                     with self.write_lock:
                         # logging.warning(f'proc {name}, idx {proc_idx} writing agent summaries')
                         if len(self.agent_summaries) == 0:
@@ -301,11 +300,7 @@ class _EnvRunner(object):
         env.eval = True 
         env.launch()
          
-        while True:
-            # if self._kill_signal.value:
-            #     logging.info('shutting down before loading new ckpt')                
-            #     env.shutdown()
-            #     return 
+        while True: 
             shutdown = self._load_next_unevaled()
             if shutdown:
                 print('Shutting down process %s since other threads are evaluating the last checkpoint' % name)
@@ -365,9 +360,6 @@ class _EnvRunner(object):
                 print('Process %s shutting down after current ckpt is done evaluating' % name)
                 env.shutdown()
                 return 
-          
         
-
-
     def kill(self):
         self._kill_signal.value = True

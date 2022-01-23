@@ -1,7 +1,7 @@
 from multiprocessing import Value
 
 import numpy as np
-
+from typing import Any, List, Union 
 from yarr.agents.agent import Agent
 from yarr.envs.env import Env
 from yarr.envs.env import MultiTaskEnv
@@ -94,10 +94,11 @@ class RolloutGeneratorWithContext(object):
         task_var_to_replay_idx=dict(),
         dev_cfgs={}, 
         augment_reward=False, 
+        replay_buffers=None,
         ):
         self._demo_dataset = demo_dataset 
-        if demo_dataset is None:
-            print('Warning! RolloutGenerator not sampling context from demo dataset')
+        if demo_dataset is not None:
+            print('Warning! RolloutGenerator sampling context from demo dataset')
         self._sample_key = sample_key 
         self._one_hot = one_hot 
         self._noisy_one_hot = noisy_one_hot 
@@ -105,6 +106,7 @@ class RolloutGeneratorWithContext(object):
         self._task_var_to_replay_idx = task_var_to_replay_idx
         self._dev_cfgs = dev_cfgs
         self._augment_reward = augment_reward
+        self._replays  = replay_buffers
 
     def _get_type(self, x):
         if x.dtype == np.float64:
@@ -127,7 +129,9 @@ class RolloutGeneratorWithContext(object):
 
     
     def generator(self, step_signal: Value, env: Env, agent: Agent,
-                  episode_length: int, timesteps: int, eval: bool, swap_task: bool = True): 
+                  episode_length: int, timesteps: int, eval: bool, 
+                  swap_task: bool = True, 
+                  context_batches: List = None): 
         obs     = env.reset(swap_task=swap_task) 
         task_id = env._active_task_id
         variation_id = env._active_variation_id
@@ -146,6 +150,10 @@ class RolloutGeneratorWithContext(object):
                 noisy_one_hot = torch.tensor(NOISY_VECS_20[int(variation_id)]).clone().detach().to(torch.float32)
         one_hot_vec = one_hot_vec.clone().detach().to(torch.float32)
         episode_trans = [] 
+        if self._dev_cfgs.use_pearl:
+            context_inputs = context_batches[buf_id] 
+            agent._context_agent.set_context_z(context_inputs)  # do this once per episode, okay if input is empty 
+         
         for step in range(episode_length): 
             prepped_data = {k: np.array([v]) for k, v in obs_history.items()}
             prepped_data.update({
@@ -161,6 +169,8 @@ class RolloutGeneratorWithContext(object):
             if self._noisy_one_hot or self._dev_cfgs.get('noisy_dim_20', False):
                 prepped_data[CONTEXT_KEY] = noisy_one_hot
             # print('rollout generator input:', prepped_data.keys())
+
+
             act_result = agent.act(step_signal.value, prepped_data,
                                    deterministic=eval)
 
@@ -238,7 +248,7 @@ class RolloutGeneratorWithContext(object):
                 # return
                 break 
 
-        if self._augment_reward and episode_trans[-1].reward > 0:
+        if self._augment_reward and episode_trans[-1].reward > 0 and not eval:
             eps_len = len(episode_trans)
             # print(f'Generated successfull traj of length {eps_len}, relabeling the reward')
             for i, ep in enumerate(episode_trans):

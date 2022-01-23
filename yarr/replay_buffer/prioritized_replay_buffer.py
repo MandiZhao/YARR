@@ -27,6 +27,7 @@ class PrioritizedReplayBuffer(UniformReplayBuffer):
         self._sum_tree = SumTree(self._replay_capacity)
         self._reward_mean = 0.0 
         self._reward_std = 1.0 
+        self._demo_cursor = 0 
 
     def get_storage_signature(self) -> Tuple[List[ReplayElement],
                                              List[ReplayElement]]:
@@ -102,6 +103,63 @@ class PrioritizedReplayBuffer(UniformReplayBuffer):
             if element_type.name == PRIORITY:
                 transition[element_type.name] = 0.0
         self._add(transition)
+
+    def update_demo_cursor(self):
+      self._demo_cursor = self.cursor()
+
+    def context_avaliable(self, batch_size, window_size):
+      if self._add_count < window_size:
+        return False
+      if self.cursor() - self._demo_cursor < window_size:
+        return False 
+      return True 
+
+    def sample_recent_batch(self, batch_size, window_size, pack_in_dict=True):
+      """
+      First sample indices from the most recent window of transitions, hence "loosely" on-policy data,
+      then do the get the actual samples according to the indices. 
+      Don't touch the demo transitions 
+      """
+      assert self._add_count >= window_size, 'Not enough data in replay buffer'
+      assert self.cursor() - self._demo_cursor >= batch_size, 'Need agent-generated data for context sampling'
+      
+      low_bound = self.cursor() - window_size
+      if self.cursor() - self._demo_cursor < window_size:
+        low_bound = self.cursor() - batch_size
+      recent_window = list(range(low_bound, self.cursor()))
+      indices = np.random.choice(recent_window, batch_size)
+      allowed_attempts = self._max_sample_attempts
+      for i in range(len(indices)):
+          if not self.is_valid_transition(indices[i]):
+              if allowed_attempts == 0:
+                  raise RuntimeError(
+                      'Max sample attempts: Tried {} times but only sampled {}'
+                      ' valid indices. Batch size is {}'.
+                          format(self._max_sample_attempts, i, batch_size))
+              index = indices[i]
+              while not self.is_valid_transition(index) and allowed_attempts > 0:
+                  # If index i is not valid keep sampling others. Note that this
+                  # is not stratified.
+                  index = np.random.choice(recent_window, 1)[0]
+                  allowed_attempts -= 1
+              indices[i] = index
+
+      transition = super(PrioritizedReplayBuffer, self).sample_transition_batch(
+        batch_size, indices, pack_in_dict=False)
+
+      transition_elements = self.get_transition_elements(batch_size)
+      transition_names = [e.name for e in transition_elements]
+      probabilities_index = transition_names.index('sampling_probabilities')
+      indices_index = transition_names.index('indices')
+      indices = transition[indices_index]
+      # The parent returned an empty array for the probabilities. Fill it with the
+      # contents of the sum tree.
+      transition[probabilities_index][:] = self.get_priority(indices)
+      batch_arrays = transition
+      if pack_in_dict:
+          batch_arrays = self.unpack_transition(transition, transition_elements)
+      return batch_arrays
+ 
 
     def sample_index_batch(self, batch_size):
         """Returns a batch of valid indices sampled as in Schaul et al. (2015).

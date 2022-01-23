@@ -50,6 +50,7 @@ class EnvRunner(object):
                  log_freq: int = 100,
                  target_replay_ratio: float = 30.0,
                  final_checkpoint_step: int = 999,
+                 dev_cfg: dict = None,
                  ):
         self._train_env = train_env
         self._eval_env = eval_env if eval_env else deepcopy(train_env)
@@ -100,6 +101,7 @@ class EnvRunner(object):
         self._iter_eval = iter_eval
         self._eval_episodes = eval_episodes
         self.final_checkpoint_step = final_checkpoint_step
+        self._dev_cfg = dev_cfg
 
     @property   
     def device_list(self):
@@ -136,6 +138,23 @@ class EnvRunner(object):
                 self._internal_env_runner.agent_summaries)
             if self._step_signal.value % self.log_freq == 0 and self._step_signal.value > 0:
                 self._internal_env_runner.agent_summaries[:] = []
+            
+            for _id, buffer in enumerate(self._train_replay_buffer):
+                context_inputs = {}
+                bsize, wsize = self._dev_cfg.pearl_context_size, self._dev_cfg.pearl_window_size
+                if buffer.context_avaliable(bsize, wsize):
+                    recent_batch = buffer.sample_recent_batch(bsize, wsize) 
+                    context_inputs = {
+                    'context_action': torch.tensor(recent_batch['action']),
+                    'context_reward': torch.tensor(recent_batch['reward']).unsqueeze(1)
+                    }
+                    # recent_batcqh['front_rgb'].shape (B, 1, 3, 128, 128)
+                    obs = torch.cat(
+                            [torch.tensor(recent_batch['front_rgb']), 
+                            torch.tensor(recent_batch['front_rgb_tp1'])], dim=1)
+                    context_inputs['context_obs'] = (obs.float() / 255.0) * 2.0 - 1.0
+                self._internal_env_runner._context_batches[_id] = context_inputs
+            
             for name, transition, eval in self._internal_env_runner.stored_transitions:
                 
                 add_to_buffer = (not eval) or self._eval_replay_buffer is not None
@@ -194,6 +213,10 @@ class EnvRunner(object):
                         )
 
             self.buffer_add_counts[:] = [int(r.add_count) for r in self._train_replay_buffer]
+            demo_cursor = self._train_replay_buffer[0]._demo_cursor
+            if demo_cursor > 0: # i.e. only on-line samples can be used for context
+                self.buffer_add_counts[:] = [int(r.add_count - demo_cursor) for r in self._train_replay_buffer]
+             
             self._internal_env_runner.online_buff_id.value = -1 
             if self._train_replay_buffer[0].batch_size > min(self.buffer_add_counts):
                 buff_id = np.argmin(self.buffer_add_counts) 
@@ -221,7 +244,7 @@ class EnvRunner(object):
             device_list=(self.device_list if len(self.device_list) >= 1 else None),
             all_task_var_ids=self._all_task_var_ids,
             eval_episodes=self._eval_episodes,
-            final_checkpoint_step=self.final_checkpoint_step,
+            final_checkpoint_step=self.final_checkpoint_step, 
             )
         #training_envs = self._internal_env_runner.spin_up_envs('train_env', self._train_envs, False)
         #eval_envs = self._internal_env_runner.spin_up_envs('eval_env', self._eval_envs, True)

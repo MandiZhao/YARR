@@ -234,6 +234,8 @@ class PyTorchTrainContextRunner(TrainRunner):
                     demo_samples = torch.stack([
                             torch.tensor(NOISY_VECS_20[int(_id)]) for _id in variation_ids], 0).to(torch.float32)
                     one_buf[CONTEXT_KEY] = demo_samples 
+                elif self.dev_cfg.use_pearl:
+                    one_buf[ONE_HOT_KEY] = F.one_hot(var_ids_tensor, num_classes=len(data_iter)).detach().to(torch.float32) 
                 else:
                     demo_samples = self._train_demo_dataset.sample_for_replay_no_match(task, var) # draw K independent samples 
                     one_buf[CONTEXT_KEY] = torch.stack( [ d[DEMO_KEY] for d in demo_samples ], dim=0)
@@ -270,7 +272,29 @@ class PyTorchTrainContextRunner(TrainRunner):
         result = {}
         for key in sampled_batch[0]:
             result[key] = torch.stack([d[key] for d in sampled_batch], 0) # shape (num_buffer, num_sample, ... 
-          
+
+        all_task_contexts = []
+        if self.dev_cfg.get('use_pearl', False):
+            for j in sampled_buf_ids:
+                recent_batch = self._wrapped_buffer[j].replay_buffer.sample_recent_batch(
+                    batch_size=self.dev_cfg.pearl_context_size, window_size=self.dev_cfg.pearl_window_size)
+                context_inputs = {
+                    'context_action': torch.tensor(recent_batch['action']),
+                    'context_reward': torch.tensor(recent_batch['reward']).unsqueeze(1)
+                }
+                obs = torch.cat(
+                    [torch.tensor(recent_batch['front_rgb']), 
+                    torch.tensor(recent_batch['front_rgb_tp1'])], 
+                    dim=1) 
+                    # gives ~ (k, 2, 3, 128, 128)
+                context_inputs['context_obs'] = (obs.float() / 255.0) * 2.0 - 1.0
+                
+                all_task_contexts.append(context_inputs)
+        for key in all_task_contexts[0]:
+            result[key] = torch.stack([d[key] for d in all_task_contexts], 0) # shape (num_buffer, num_sample, ... 
+            # print(result[key].shape, result['action'].shape) 
+            # context action v.s. actual replay action: (B, num_context_trans, 8) v.s. (B, num_batch_trans, 8)
+
         return result
         
     def _sample_replay(self, data_iter):
@@ -452,6 +476,16 @@ class PyTorchTrainContextRunner(TrainRunner):
                 if transition_wait % TRAN_WAIT_WARN == 0:
                     logging.info('Waiting for %d total samples before training. Currently have %s.' %
                     (self._transitions_before_train, str(self._get_sum_add_counts())))
+            transition_wait = 0
+            if self.dev_cfg.use_pearl and self.dev_cfg.pearl_onpolicy_context:
+                # wait for on-policy context 
+                while np.any([r.replay_buffer.add_count for r in self._wrapped_buffer]) < self.dev_cfg.pearl_context_size:
+                    time.sleep(1)
+                transition_wait += 1
+                if transition_wait % TRAN_WAIT_WARN == 0:
+                    logging.info('Waiting for %d enough on-policy samples to get context. Currently have %s.' %
+                    (self._transitions_before_train, str(self._get_sum_add_counts())))
+
 
         logging.info('Done waiting for %d total samples before training. Currently have %s.' %
                     (self._transitions_before_train, str(self._get_sum_add_counts())))
@@ -619,8 +653,7 @@ class PyTorchTrainContextRunner(TrainRunner):
                 #         i, 'replay%d/size' % r_i,
                 #         wrapped_buffer.replay_buffer.replay_capacity
                 #         if wrapped_buffer.replay_buffer.is_full()
-                #         else wrapped_buffer.replay_buffer.add_count)
-
+                #         else wrapped_buffer.replay_buffer.add_count) 
                 self._writer.add_scalar(
                     i, 'replay/replay_ratio', replay_ratio)
                 self._writer.add_scalar(
@@ -651,9 +684,7 @@ class PyTorchTrainContextRunner(TrainRunner):
                 if ckpt > -1:
                     assert len(summs) != 0, 'Accumulator is empty!'
                     logging.info(f'Logging all {len(summs)} evaluation data from checkpoint step: {ckpt}')
-                    self._writer.log_ckpt_eval(ckpt, summs)
-
-        
+                    self._writer.log_ckpt_eval(ckpt, summs) 
 
         logging.info('Stopping envs ...')
         self._env_runner.stop()

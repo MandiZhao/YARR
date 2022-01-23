@@ -33,7 +33,7 @@ from arm.c2farm.context_agent import CONTEXT_KEY # the key context agent looks f
 from functools import partial 
 from einops import rearrange
 
-NUM_WEIGHTS_TO_KEEP = 101
+NUM_WEIGHTS_TO_KEEP = 301
 TASK_ID='task_id'
 VAR_ID='variation_id'
 DEMO_KEY='front_rgb' # what to look for in the demo dataset
@@ -290,10 +290,10 @@ class PyTorchTrainContextRunner(TrainRunner):
                 context_inputs['context_obs'] = (obs.float() / 255.0) * 2.0 - 1.0
                 
                 all_task_contexts.append(context_inputs)
-        for key in all_task_contexts[0]:
-            result[key] = torch.stack([d[key] for d in all_task_contexts], 0) # shape (num_buffer, num_sample, ... 
-            # print(result[key].shape, result['action'].shape) 
-            # context action v.s. actual replay action: (B, num_context_trans, 8) v.s. (B, num_batch_trans, 8)
+            for key in all_task_contexts[0]:
+                result[key] = torch.stack([d[key] for d in all_task_contexts], 0) # shape (num_buffer, num_sample, ... 
+                # print(result[key].shape, result['action'].shape) 
+                # context action v.s. actual replay action: (B, num_context_trans, 8) v.s. (B, num_batch_trans, 8)
 
         return result
         

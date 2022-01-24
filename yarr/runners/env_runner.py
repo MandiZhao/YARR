@@ -156,8 +156,9 @@ class EnvRunner(object):
                 self._internal_env_runner._context_batches[_id] = context_inputs
             
             for name, transition, eval in self._internal_env_runner.stored_transitions:
-                
                 add_to_buffer = (not eval) or self._eval_replay_buffer is not None
+                if self._train_envs == 0 and self._iter_eval:
+                    add_to_buffer = True # for PEARL agent, need to update buffer with eval transitions!
                 if add_to_buffer:
                     kwargs = dict(transition.observation)
                     kwargs.update(transition.info)
@@ -170,7 +171,7 @@ class EnvRunner(object):
                     replay_index = self.task_var_to_replay_idx[task_id][var_id]
                     if self._share_buffer_across_tasks:
                         replay_index = 0
-                    rb = self._eval_replay_buffer[replay_index] if eval else self._train_replay_buffer[replay_index]
+                    rb = self._train_replay_buffer[replay_index]
                     rb.add(
                         np.array(transition.action), transition.reward,
                         transition.terminal,
@@ -193,12 +194,12 @@ class EnvRunner(object):
             # logging.info('Finished EnvRunner calling internal runner write lock')
             
             for ckpt_step, all_transitions in self._internal_env_runner.stored_ckpt_eval_transitions.items():
-                if ckpt_step in self._internal_env_runner._finished_eval_checkpoint: 
+                if ckpt_step in self._internal_env_runner._finished_eval_checkpoint:  
                     for name, transition in all_transitions:
                         self._new_transitions['eval_envs'] += 1
                         self._total_transitions['eval_envs'] += 1
                         if transition.terminal:
-                            self._total_episodes['eval_envs'] += 1
+                            self._total_episodes['eval_envs'] += 1 
                     
                     self._agent_ckpt_summaries[ckpt_step] = self._internal_env_runner.agent_ckpt_eval_summaries.pop(ckpt_step, [])
                     if self._stat_accumulator is not None:
@@ -266,7 +267,8 @@ class EnvRunner(object):
                         p = self._internal_env_runner.restart_process(p.name)
                         envs.append(p)
 
-            if not self._kill_signal.value or len(self._internal_env_runner.stored_ckpt_eval_transitions) > 0:
+            if not self._kill_signal.value or len(self._internal_env_runner.stored_transitions) > 0 or \
+                 len(self._internal_env_runner.stored_ckpt_eval_transitions) > 0:
                 new_transitions = self._update()
                 for p in envs:
                     if new_transitions[p.name] == 0:

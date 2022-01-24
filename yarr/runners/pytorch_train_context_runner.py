@@ -474,11 +474,13 @@ class PyTorchTrainContextRunner(TrainRunner):
                 time.sleep(1)  
                 transition_wait += 1
                 if transition_wait % TRAN_WAIT_WARN == 0:
-                    logging.info('Waiting for %d total samples before training. Currently have %s.' %
-                    (self._transitions_before_train, str(self._get_sum_add_counts())))
+                    logging.info('Waiting for %d total samples before training. Currently have %s, min number of samples in buffer: %s' %
+                    (self._transitions_before_train, self._get_sum_add_counts(), self._get_min_add_counts()) )
+                    # print([r.replay_buffer.add_count for r in self._wrapped_buffer])
             transition_wait = 0
             if self.dev_cfg.use_pearl and self.dev_cfg.pearl_onpolicy_context:
                 # wait for on-policy context 
+                #print('pearl wait', [r.replay_buffer.add_count for r in self._wrapped_buffer])
                 while min([r.replay_buffer.add_count - r.replay_buffer._demo_cursor for r in self._wrapped_buffer]) < self.dev_cfg.pearl_context_size:
                     time.sleep(1) 
                     transition_wait += 1

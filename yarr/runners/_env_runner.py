@@ -347,6 +347,9 @@ class _EnvRunner(object):
 
                     for transition in episode_rollout:
                         all_episode_rollout.append((name, transition)) 
+                        with self.write_lock:  
+                            self.stored_transitions.append((name, transition, True)) 
+
 
             with self.write_lock: 
                 self.stored_ckpt_eval_transitions[ckpt] = all_episode_rollout  

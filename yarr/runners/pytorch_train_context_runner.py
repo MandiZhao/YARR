@@ -210,8 +210,7 @@ class PyTorchTrainContextRunner(TrainRunner):
                         self._task_reward_means[int(task)]
                         ) > 1 else rew_std 
                 one_buf['reward'] /= (rew_std + 1e-8)
-            
-            
+             
             one_buf['buffer_id'] = torch.tensor(
                 [j for _ in range(self._wrapped_buffer[j].replay_buffer.batch_size) ], dtype=torch.int64)
             
@@ -271,13 +270,13 @@ class PyTorchTrainContextRunner(TrainRunner):
 
         result = {}
         for key in sampled_batch[0]:
-            result[key] = torch.stack([d[key] for d in sampled_batch], 0) # shape (num_buffer, num_sample, ... 
-
+            result[key] = torch.stack([d[key] for d in sampled_batch], 0) # shape (num_buffer, num_sample, ...  
         all_task_contexts = []
         if self.dev_cfg.get('use_pearl', False):
             for j in sampled_buf_ids:
                 recent_batch = self._wrapped_buffer[j].replay_buffer.sample_recent_batch(
-                    batch_size=self.dev_cfg.pearl_context_size, window_size=self.dev_cfg.pearl_window_size)
+                    batch_size=self.dev_cfg.pearl_context_size, 
+                    window_size=self.dev_cfg.pearl_window_size)
                 context_inputs = {
                     'context_action': torch.tensor(recent_batch['action']),
                     'context_reward': torch.tensor(recent_batch['reward']).unsqueeze(1)
@@ -293,8 +292,7 @@ class PyTorchTrainContextRunner(TrainRunner):
             for key in all_task_contexts[0]:
                 result[key] = torch.stack([d[key] for d in all_task_contexts], 0) # shape (num_buffer, num_sample, ... 
                 # print(result[key].shape, result['action'].shape) 
-                # context action v.s. actual replay action: (B, num_context_trans, 8) v.s. (B, num_batch_trans, 8)
-
+                # context action v.s. actual replay action: (B, num_context_trans, 8) v.s. (B, num_batch_trans, 8) 
         return result
         
     def _sample_replay(self, data_iter):
@@ -468,6 +466,7 @@ class PyTorchTrainContextRunner(TrainRunner):
         # Kick off the environments
         if not self._offline:
             self._env_runner.start(self._save_load_lock)
+        logged_eval_steps = []
         if not self._eval_only:
             transition_wait = 0
             while (self._get_sum_add_counts() < self._transitions_before_train or self._get_min_add_counts() < single_buffer_bsize):
@@ -477,6 +476,15 @@ class PyTorchTrainContextRunner(TrainRunner):
                     logging.info('Waiting for %d total samples before training. Currently have %s, min number of samples in buffer: %s' %
                     (self._transitions_before_train, self._get_sum_add_counts(), self._get_min_add_counts()) )
                     # print([r.replay_buffer.add_count for r in self._wrapped_buffer])
+                evaled_steps = self._env_runner._total_transitions['eval_envs']
+                approx_step = evaled_steps - evaled_steps % self._log_freq
+                if evaled_steps > 50 and evaled_steps % self._log_freq < 10 and approx_step not in logged_eval_steps:
+                    logging.info('Evaluated %d steps.' % evaled_steps)
+                    env_summaries = self._env_runner.summaries() 
+                    self._writer.log_evalstep(approx_step, env_summaries)
+                    logged_eval_steps.append(approx_step)
+
+
             transition_wait = 0
             if self.dev_cfg.use_pearl and self.dev_cfg.pearl_onpolicy_context:
                 # wait for on-policy context 

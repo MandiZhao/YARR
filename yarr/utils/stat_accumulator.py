@@ -415,6 +415,14 @@ class MultiTaskAccumulatorV2(StatAccumulator):
             earliest_ckpt = min(self._ready_to_log.keys())
             return earliest_ckpt, self._ready_to_log.pop(earliest_ckpt)
 
+    def pop_envstep_eval(self) -> List[Summary]:
+        if len(self._ready_to_log.keys()) == 0:
+            return -1, []
+        with self._ckpt_lock:
+            earliest_ckpt = min(self._ready_to_log.keys())
+            return earliest_ckpt, self._ready_to_log.pop(earliest_ckpt)
+
+
     def pop(self) -> List[Summary]:
         combined = self._train_accs_mean.pop()
         for acc in self._train_accs + self._eval_accs:

@@ -317,7 +317,9 @@ class _EnvRunner(object):
             #     self.agent_ckpt_eval_summaries[ckpt] = [] 
             all_episode_rollout = []
             all_agent_summaries = []
+            num_eval_steps = 0
             for (task_id, var_id) in self._all_task_var_ids:
+                
                 if self._kill_signal.value: 
                     logging.info('Finishing evaluation before full shutdown process', name, 'evaluating task + var:', task_id, var_id)
                 env.set_task_variation(task_id, var_id)
@@ -347,8 +349,10 @@ class _EnvRunner(object):
 
                     for transition in episode_rollout:
                         all_episode_rollout.append((name, transition)) 
+                        num_eval_steps += 1
                         with self.write_lock:  
                             self.stored_transitions.append((name, transition, True)) 
+                         
 
 
             with self.write_lock: 

@@ -88,7 +88,25 @@ class LogWriter(object):
         if self._wandb_logging:
             wandb.log(wandb_log)
          
-
+    def log_evalstep(self, i, summaries):
+        wandb_log = {'Eval Env Step': i}
+        for summary in summaries:
+            try:
+                if isinstance(summary, ScalarSummary): 
+                    wandb_log.update( {summary.name: summary.value} )
+                elif isinstance(summary, ImageSummary):
+                    v = (summary.value if summary.value.ndim == 3 else
+                             summary.value[0]) 
+                    wandb_log.update( {summary.name: wandb.Image(v)} )
+                elif isinstance(summary, VideoSummary):
+                    v = (summary.value if summary.value.ndim == 5 else
+                             np.array([summary.value])) 
+                    wandb_log.update( {summary.name: wandb.Video(v, fps=summary.fps)} )
+            except Exception as e:
+                logging.error('Error on summary: %s' % summary.name)
+                raise e
+        if self._wandb_logging:
+            wandb.log(wandb_log)
 
     def add_summaries(self, i, summaries):
         wandb_log = {'Train step': i}

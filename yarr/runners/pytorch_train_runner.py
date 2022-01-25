@@ -213,6 +213,8 @@ class PyTorchTrainRunner(TrainRunner):
             self._step(i, batch)
             step_time = time.time() - t
 
+            
+
             if log_iteration and self._writer is not None:
                 replay_ratio = get_replay_ratio()
                 logging.info('Step %d. Sample time: %s. Step time: %s. Replay ratio: %s.' % (

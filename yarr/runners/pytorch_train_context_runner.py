@@ -189,9 +189,37 @@ class PyTorchTrainContextRunner(TrainRunner):
                 priority_ = np.nan_to_num(priority_, copy=True, nan=max_prio)
                 self._wrapped_buffer[buf_id].replay_buffer.set_priority(
                     indices_.cpu().detach().numpy(), priority_)
-                # not change self._buffer_sample_rates or task sample rates for now
-        
+                # not change self._buffer_sample_rates or task sample rates for now 
         self._agent.update_reptile_outer(frac_done)
+
+    def _anil_step(self, i, data_iter):
+        task_id = np.random.choice(
+            a=self.task_ids, size=1, replace=False)[0]
+        frac_done = i / self._iterations
+        for k in range(self.dev_cfg['reptile_k']):
+            buf_ids = list(np.random.choice(
+                list(self.task_var_to_replay_idx[task_id].values()),
+                size=self._buffers_per_batch,
+                replace=(True if len(self.task_var_to_replay_idx[task_id].values()) < self._buffers_per_batch else False),
+                ))
+            sampled_batch = self._sample_buffers(buf_ids, data_iter)
+            update_dict = self._agent.update_reptile_inner(i, sampled_batch, k, anil=True)
+            priority = update_dict['priority']
+            indices = rearrange(sampled_batch['indices'], 'b k ... -> (b k) ... ')
+            sampled_buffer_ids = rearrange(sampled_batch['buffer_id'], 'b k ... -> (b k) ... ')
+            for buf_id in buf_ids:
+                buf_mask = sampled_buffer_ids == buf_id 
+                indices_ = torch.masked_select(indices, buf_mask)
+                priority_ = torch.masked_select(priority, buf_mask).cpu().detach().numpy() 
+                max_prio = self._wrapped_buffer[buf_id].replay_buffer.get_max_priority() # swap NaN with max priority 
+                priority_ = np.nan_to_num(priority_, copy=True, nan=max_prio)
+                self._wrapped_buffer[buf_id].replay_buffer.set_priority(
+                    indices_.cpu().detach().numpy(), priority_)
+                # not change self._buffer_sample_rates or task sample rates for now 
+        self._agent.update_reptile_outer(frac_done, anil=True) # soft update head params
+        sampled_batch, sampled_buf_ids = self._sample_replay(data_iter) 
+        self._step(i, sampled_batch, sampled_buf_ids, anil=True) # regular update body params
+
 
     def _sample_buffers(self, sampled_buf_ids, data_iter):
         sampled_batch = []
@@ -370,8 +398,11 @@ class PyTorchTrainContextRunner(TrainRunner):
         sampled_batch = self._sample_buffers(sampled_buf_ids, data_iter)
         return sampled_batch, sampled_buf_ids 
 
-    def _step(self, i, sampled_batch, buffer_ids):
-        update_dict = self._agent.update(i, sampled_batch)
+    def _step(self, i, sampled_batch, buffer_ids, anil=False):
+        if anil:
+            update_dict = self._agent.update_anil_outer(i, sampled_batch)
+        else:
+            update_dict = self._agent.update(i, sampled_batch)
         # new version: use mask select
         prio_key = 'priority' 
         priority = update_dict[prio_key] 
@@ -479,10 +510,18 @@ class PyTorchTrainContextRunner(TrainRunner):
                 evaled_steps = self._env_runner._total_transitions['eval_envs']
                 approx_step = evaled_steps - evaled_steps % self._log_freq
                 if evaled_steps > 50 and evaled_steps % self._log_freq < 10 and approx_step not in logged_eval_steps:
-                    logging.info('Evaluated %d steps.' % evaled_steps)
+                    # logging.info('Evaluated %d steps.' % evaled_steps)
                     env_summaries = self._env_runner.summaries() 
                     self._writer.log_evalstep(approx_step, env_summaries)
                     logged_eval_steps.append(approx_step)
+
+                if approx_step > 10000:
+                    logging.info('Stopping envs ...')
+                    self._env_runner.stop() 
+                    [r.replay_buffer.shutdown() for r in self._wrapped_buffer] 
+                    if self._writer is not None:
+                        self._writer.close()
+                    return 
 
 
             transition_wait = 0
@@ -550,7 +589,7 @@ class PyTorchTrainContextRunner(TrainRunner):
         context_step = 0
         buffer_summaries = defaultdict(list)
         recent_online_task_ids = []
-        for i in range(0, self._iterations, (self.dev_cfg['reptile_k'] if self.dev_cfg.get('use_reptile', False) else 1)):
+        for i in range(0, self._iterations, (self.dev_cfg['reptile_k'] if (self.dev_cfg.get('use_reptile', False) or self.dev_cfg.get('use_anil', False) ) else 1)):
             self._env_runner.set_step(i)
 
             log_iteration = i % self._log_freq == 0 or i == self._iterations - 1  
@@ -564,7 +603,7 @@ class PyTorchTrainContextRunner(TrainRunner):
                 if self._eval_only:
                     return 100 
                 size_used = batch_times_buffers_per_sample * i
-                if self.dev_cfg.get('use_reptile', False):
+                if self.dev_cfg.get('use_reptile', False) or self.dev_cfg.get('use_anil', False):
                     size_used *= self.dev_cfg['reptile_k']
                 # size_used = single_buffer_bsize * i
                 size_added = (
@@ -599,6 +638,8 @@ class PyTorchTrainContextRunner(TrainRunner):
             if not self._eval_only:
                 if self.dev_cfg.get('use_reptile', False):
                     self._reptile_step(i, data_iter)
+                elif self.dev_cfg.get('use_anil', False):
+                    self._anil_step(i, data_iter)
                 else:
                     sampled_batch, sampled_buf_ids = self._sample_replay(data_iter) 
                     sample_time = time.time() - t

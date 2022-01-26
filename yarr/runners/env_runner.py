@@ -157,7 +157,7 @@ class EnvRunner(object):
             
             for name, transition, eval in self._internal_env_runner.stored_transitions:
                 add_to_buffer = (not eval) or self._eval_replay_buffer is not None
-                if self._train_envs == 0 and self._iter_eval:
+                if self._train_envs == 0:
                     add_to_buffer = True # for PEARL agent, need to update buffer with eval transitions!
                 if add_to_buffer:
                     kwargs = dict(transition.observation)

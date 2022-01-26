@@ -142,7 +142,7 @@ class EnvRunner(object):
             for _id, buffer in enumerate(self._train_replay_buffer):
                 context_inputs = {}
                 bsize, wsize = self._dev_cfg.pearl_context_size, self._dev_cfg.pearl_window_size
-                if buffer.context_avaliable(bsize, wsize):
+                if buffer.context_avaliable(bsize, wsize) and self._dev_cfg.use_pearl:
                     recent_batch = buffer.sample_recent_batch(bsize, wsize) 
                     context_inputs = {
                     'context_action': torch.tensor(recent_batch['action']),
